@@ -1,0 +1,16 @@
+app:
+  name: course_agent
+  version: "0.1.0"
+
+llm:
+  provider: mock          # mock | openai
+  model: gpt-4o-mini
+  temperature: 0.2
+  max_tokens: 1024
+
+agent:
+  max_steps: 8
+  timeout_seconds: 120
+
+logging:
+  level: INFO

@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# 环境变量（含 API Key）—— 绝对不要提交！
+.env
+.env.*
+*.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Data / 本地缓存 / 记忆持久化
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Chainlit 运行时产物
+.files/
+.chainlit/translations/
+chat_history/
+.chainlit/.langchain.db
+
+# Tests / 覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# uv
+uv.lock
+
+# 日志
+*.log
+logs/

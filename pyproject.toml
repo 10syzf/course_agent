@@ -1,0 +1,54 @@
+[project]
+name = "course-agent"
+version = "0.1.0"
+description = "Course Agent - 面向学生课程作业场景的智能 Agent 系统 (MVP)"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+authors = [
+    { name = "course_agent", email = "dev@example.com" },
+]
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "loguru>=0.7",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "openai>=1.30",
+    "chainlit>=1.1,<3.0",
+]
+
+[project.optional-dependencies]
+memory = [
+    "chromadb>=0.5",
+    "sqlalchemy>=2.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+course-agent = "course_agent.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["course_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = ["E501"]
