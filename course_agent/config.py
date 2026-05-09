@@ -60,17 +60,21 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
 
     env_file = root / ".env"
     if env_file.exists():
+        # ⚠️ override=True：.env 永远赢过 OS 环境变量
+        # 否则如果用户 shell 里残留旧 OPENAI_API_KEY（比如之前 export 过一个错的），
+        # 会污染所有子进程导致认证失败而 .env 完全无效。
+        # 详见 task_007 实战教训：曾出现 .env key 正确、curl 200，但 chainlit 进程 401 的诡异现象。
         try:
             from dotenv import load_dotenv
 
-            load_dotenv(env_file, override=False)
+            load_dotenv(env_file, override=True)
         except ImportError:
             for line in env_file.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+                os.environ[k.strip()] = v.strip()
 
     llm_data = data.get("llm", {})
     if os.getenv("LLM_PROVIDER"):

@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 import chainlit as cl
-from chainlit.input_widget import Slider, TextInput
+from chainlit.input_widget import Slider, Switch, TextInput
 
 from course_agent.config import get_config
 from course_agent.core import AgentLoop
 from course_agent.llm import create_llm
 from course_agent.llm.base import LLMMessage
-from course_agent.logger import setup_logger
+from course_agent.logger import get_logger, setup_logger
+from course_agent.memory import (
+    LongTermMemory,
+    MemoryManager,
+    ShortTermMemory,
+    create_embedder,
+)
+from course_agent.memory.tools import set_active_manager
 from course_agent.tools import get_registry
 from course_agent.ui.adapters import ChainlitCallbacks
 
 setup_logger()
+_log = get_logger("ChainlitApp")
 
 
 _WELCOME = (
@@ -106,7 +115,7 @@ def _scene_actions() -> list[cl.Action]:
     ]
 
 
-def _build_settings_widgets(cfg) -> list:
+def _build_settings_widgets(cfg, *, memory_enabled: bool) -> list:
     """ChatSettings 面板控件."""
     return [
         TextInput(
@@ -133,7 +142,34 @@ def _build_settings_widgets(cfg) -> list:
             step=1,
             description="单轮最多允许的工具调用轮数",
         ),
+        Switch(
+            id="memory_enabled",
+            label="启用长期记忆",
+            initial=memory_enabled,
+            description="开启后跨会话也能记住关键信息（基于 Chroma 向量库 + DashScope embedding）",
+        ),
     ]
+
+
+def _build_memory(llm, *, enable_long: bool, persist_dir: Path) -> MemoryManager:
+    """构造 MemoryManager.
+
+    Args:
+        llm: 用于短期记忆摘要压缩的 LLM
+        enable_long: 是否启用长期向量记忆（Chroma）
+        persist_dir: 长期记忆持久化目录
+    """
+    short = ShortTermMemory(llm=llm, max_turns=20, compress_trigger=16)
+    long_mem: LongTermMemory | None = None
+    if enable_long:
+        try:
+            embedder = create_embedder()  # 自动选 openai/hash
+            long_mem = LongTermMemory(embedder=embedder, persist_dir=persist_dir)
+            _log.info(f"长期记忆已启用，persist_dir={persist_dir}")
+        except Exception as e:  # noqa: BLE001
+            _log.warning(f"长期记忆初始化失败，回退到仅短期记忆：{e}")
+            long_mem = None
+    return MemoryManager(short=short, long=long_mem)
 
 
 def _build_agent(cfg, system_prompt: str | None = None) -> AgentLoop:
@@ -163,21 +199,34 @@ async def on_chat_start() -> None:
         ).send()
         return
 
+    # 默认启用长期记忆（持久化到 data/memory/<session_id>）
+    session_id = cl.user_session.get("id") or "default"
+    persist_dir = Path("data/memory") / str(session_id)
+    memory = _build_memory(agent.llm, enable_long=True, persist_dir=persist_dir)
+    set_active_manager(memory)
+
     history = _reset_history(agent.system_prompt)
 
     cl.user_session.set("cfg", cfg)
     cl.user_session.set("agent", agent)
     cl.user_session.set("history", history)
     cl.user_session.set("scene", "default")
+    cl.user_session.set("memory", memory)
+    cl.user_session.set("memory_enabled", memory.long is not None)
+    cl.user_session.set("persist_dir", str(persist_dir))
 
     # Settings 面板（右上角齿轮图标）
-    await cl.ChatSettings(_build_settings_widgets(cfg)).send()
+    await cl.ChatSettings(
+        _build_settings_widgets(cfg, memory_enabled=memory.long is not None)
+    ).send()
 
     tool_names = ", ".join(get_registry().list_names())
+    mem_status = "✅ 已启用（短期 + 长期）" if memory.long else "⚠️ 仅短期（长期记忆初始化失败或被禁用）"
     header = (
         f"**Provider**: `{cfg.llm.provider}` ｜ **Model**: `{cfg.llm.model}` "
         f"｜ **Temp**: `{cfg.llm.temperature}` ｜ **Max steps**: `{cfg.agent.max_steps}`  \n"
-        f"**已加载工具**: {tool_names}"
+        f"**已加载工具**: {tool_names}  \n"
+        f"**记忆系统**: {mem_status}"
     )
     await cl.Message(
         content=f"{_WELCOME}\n\n---\n{header}",
@@ -188,7 +237,7 @@ async def on_chat_start() -> None:
 
 @cl.action_callback("scene")
 async def on_scene_action(action: cl.Action) -> None:
-    """点击场景快捷按钮：切换 System Prompt + 清空历史."""
+    """点击场景快捷按钮：切换 System Prompt + 清空短期历史（保留长期记忆）."""
     scene = (action.payload or {}).get("scene", "default")
     if scene not in _SCENE_PROMPTS:
         await cl.Message(content=f"⚠️ 未知场景：{scene}", author="System").send()
@@ -209,9 +258,21 @@ async def on_scene_action(action: cl.Action) -> None:
     cl.user_session.set("history", _reset_history(prompt))
     cl.user_session.set("scene", scene)
 
+    # 重置短期记忆，但保留长期记忆（跨场景的偏好/事实仍然可用）
+    memory: MemoryManager | None = cl.user_session.get("memory")
+    if memory is not None:
+        await memory.clear_short()
+        # 重建一个新的 short term memory（把当前 LLM 注入进去用于新对话的摘要）
+        memory.short = ShortTermMemory(
+            llm=agent.llm,
+            max_turns=memory.short.max_turns,
+            compress_trigger=memory.short.compress_trigger,
+        )
+        set_active_manager(memory)
+
     await cl.Message(
         content=(
-            f"✅ 已切换到 **{label}**，历史对话已清空。\n\n"
+            f"✅ 已切换到 **{label}**，短期对话已清空（长期记忆保留）。\n\n"
             "现在你可以直接输入本场景下的作业问题啦 👇"
         ),
         author="Course Agent",
@@ -220,12 +281,15 @@ async def on_scene_action(action: cl.Action) -> None:
 
 @cl.on_settings_update
 async def on_settings_update(settings: dict) -> None:
-    """Settings 面板变化：重建 Agent（保留当前场景的 system prompt 与历史）."""
+    """Settings 面板变化：重建 Agent + 按需切换长期记忆开关."""
     cfg = cl.user_session.get("cfg") or copy.deepcopy(get_config())
 
     model = (settings.get("model") or cfg.llm.model).strip() or cfg.llm.model
     temperature = float(settings.get("temperature", cfg.llm.temperature))
     max_steps = int(settings.get("max_steps", cfg.agent.max_steps))
+    memory_enabled = bool(
+        settings.get("memory_enabled", cl.user_session.get("memory_enabled", True))
+    )
 
     cfg.llm.model = model
     cfg.llm.temperature = temperature
@@ -245,15 +309,29 @@ async def on_settings_update(settings: dict) -> None:
         ).send()
         return
 
+    # 处理长期记忆开关变化
+    memory: MemoryManager | None = cl.user_session.get("memory")
+    persist_dir = Path(cl.user_session.get("persist_dir") or "data/memory/default")
+    if memory is None or (memory_enabled != (memory.long is not None)):
+        memory = _build_memory(agent.llm, enable_long=memory_enabled, persist_dir=persist_dir)
+    else:
+        # 仅替换 LLM（用于摘要压缩）
+        memory.short.llm = agent.llm
+    set_active_manager(memory)
+
     cl.user_session.set("cfg", cfg)
     cl.user_session.set("agent", agent)
+    cl.user_session.set("memory", memory)
+    cl.user_session.set("memory_enabled", memory.long is not None)
 
+    mem_line = "✅ 长期记忆已启用" if memory.long else "⚠️ 长期记忆已关闭"
     await cl.Message(
         content=(
             "⚙️ 设置已更新：\n"
             f"- Model: `{model}`\n"
             f"- Temperature: `{temperature}`\n"
-            f"- Max steps: `{max_steps}`\n\n"
+            f"- Max steps: `{max_steps}`\n"
+            f"- {mem_line}\n\n"
             "历史对话保留，下一条消息起生效。"
         ),
         author="System",
@@ -262,9 +340,10 @@ async def on_settings_update(settings: dict) -> None:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    """处理用户发送的消息."""
+    """处理用户发送的消息（带记忆增强）."""
     agent: AgentLoop | None = cl.user_session.get("agent")
     history_raw: list[dict] = cl.user_session.get("history") or []
+    memory: MemoryManager | None = cl.user_session.get("memory")
 
     if agent is None:
         await cl.Message(
@@ -272,15 +351,36 @@ async def on_message(message: cl.Message) -> None:
         ).send()
         return
 
-    history_msgs = _build_history(history_raw)
+    # 关键：每次进入消息处理都要把 active manager 切到本 session 的 manager
+    set_active_manager(memory)
+
+    base_history = _build_history(history_raw)
+
+    # 用 MemoryManager 重建增强上下文（注入长期记忆相关片段 + 短期摘要）
+    if memory is not None:
+        try:
+            enriched = await memory.enrich_context(message.content, base_history)
+        except Exception as e:  # noqa: BLE001
+            _log.warning(f"enrich_context 失败，回退到裸历史：{e}")
+            enriched = base_history
+    else:
+        enriched = base_history
+
     callbacks = ChainlitCallbacks()
 
-    # 关键：把之前的 user/assistant 轮次一并传入，作为多轮上下文
     result = await agent.arun(
         user_input=message.content,
-        history=history_msgs,
+        history=enriched,
         callbacks=callbacks,
     )
+
+    # 写入记忆（短期 + 可选长期）
+    if memory is not None:
+        try:
+            await memory.add_user(message.content)
+            await memory.add_assistant(result.answer)
+        except Exception as e:  # noqa: BLE001
+            _log.warning(f"写入记忆失败：{e}")
 
     # 更新 session 历史：追加本轮的 user + assistant
     history_raw.append(LLMMessage(role="user", content=message.content).model_dump())

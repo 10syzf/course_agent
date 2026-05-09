@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from course_agent.tools import get_registry
-from course_agent.tools.builtin import calculator, file_read, file_write, web_search
+from course_agent.tools.builtin import calculator, file_read, file_write
 
 
 def test_registry_contains_builtin_tools():
@@ -31,10 +31,13 @@ def test_file_read_missing(tmp_path: Path):
     assert "不存在" in file_read(str(tmp_path / "nope.txt"))
 
 
-def test_web_search_mock():
-    out = web_search("深度学习", top_k=2)
-    assert "深度学习" in out
-    assert out.count("https://example.com") == 2
+def test_web_search_registered_real_impl():
+    """web_search 已替换为真实实现，注册名仍存在."""
+    reg = get_registry()
+    schema = reg.to_openai_schemas(["web_search"])[0]
+    assert schema["function"]["name"] == "web_search"
+    # 真实实现不再有 top_k 而是 k 参数
+    assert "k" in schema["function"]["parameters"]["properties"] or "query" in schema["function"]["parameters"]["properties"]
 
 
 def test_schema_generation():

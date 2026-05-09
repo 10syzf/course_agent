@@ -245,9 +245,14 @@ class OpenAILLM(BaseLLM):
             is_api = False
 
         if is_auth:
+            # 把服务端真实返回的错误正文带出来（DashScope/OpenAI 都会有详情）
+            detail = str(e)
             msg = (
                 "[LLM 认证失败] 请检查 OPENAI_API_KEY 是否正确、"
-                "以及 OPENAI_BASE_URL 是否与该 key 匹配。"
+                "以及 OPENAI_BASE_URL 是否与该 key 匹配。\n"
+                f"⚠️ 常见原因：你 shell 里 export 了一个旧的 OPENAI_API_KEY，"
+                f"导致 .env 中的正确值被覆盖。可执行 `unset OPENAI_API_KEY` 后重启。\n"
+                f"🔍 服务端原始错误：{detail[:300]}"
             )
         elif is_api:
             msg = f"[LLM API 错误] {type(e).__name__}: {e}"

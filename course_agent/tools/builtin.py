@@ -76,21 +76,3 @@ def file_write(path: str, content: str) -> str:
         return f"已写入 {p}，长度 {len(content)} 字符"
     except Exception as e:
         return f"写入失败：{e}"
-
-
-@tool(name="web_search", description="在网络上搜索关键词，返回前若干条结果（当前为 Mock 实现）")
-def web_search(query: str, top_k: int = 3) -> str:
-    """Mock 的网页搜索，后续里程碑会替换为真实 DuckDuckGo/Bing."""
-    fake_results = [
-        {
-            "title": f"[Mock] 关于「{query}」的结果 #{i + 1}",
-            "url": f"https://example.com/search?q={query}&n={i + 1}",
-            "snippet": f"这是针对 \"{query}\" 的第 {i + 1} 条占位摘要。",
-        }
-        for i in range(max(1, min(top_k, 5)))
-    ]
-    lines = [
-        f"{i + 1}. {r['title']}\n   {r['url']}\n   {r['snippet']}"
-        for i, r in enumerate(fake_results)
-    ]
-    return "\n".join(lines)

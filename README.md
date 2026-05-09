@@ -17,9 +17,10 @@
 | 维度 | 📱 普通 AI Chat（ChatGPT 网页版 / 文心 / 通义等） | 🤖 Course Agent |
 |---|---|---|
 | **核心范式** | 单轮 prompt → response | **ReAct Agent Loop**：思考 → 调用工具 → 观察结果 → 继续思考 |
-| **能否调用外部能力** | ❌ 只能输出文本 | ✅ 自动调用 `calculator`、`file_read/write`、`web_search` 等工具 |
+| **能否调用外部能力** | ❌ 只能输出文本 | ✅ 自动调用 `calculator`、`file_read/write`、`web_search`（Tavily/DDG 真实联网）、`web_fetch`、`recall`/`remember`（语义记忆）等工具 |
 | **数值计算是否靠谱** | ❌ 可能"编造"计算结果 | ✅ 遇到算式**强制走 calculator**，AST 安全求值，杜绝幻觉 |
 | **能不能读写本地文件** | ❌ 做不到 | ✅ `file_read` 直接读作业 PDF/py/txt，`file_write` 把答案保存到文件 |
+| **跨会话记忆** | ⚠️ 仅同一会话/部分付费版云端记忆 | ✅ **本地 Chroma 向量库**：上次说"我喜欢 Python"，下次新会话也能 `recall` 出来 |
 | **是否能扩展新工具** | ❌ 用户无法自定义 | ✅ `@tool` 装饰器 3 行代码注册新工具，自动生成 JSON Schema |
 | **作业场景适配** | ❌ 所有问题用同一套 prompt | ✅ 4 种预置场景（📐 数学 / 💻 编程 / 📝 写作 / 🔍 资料检索），点按钮一键切换 System Prompt |
 | **中间推理过程** | ❌ 黑盒，一次性返回 | ✅ UI 以**可折叠的 Step 卡片**展示每一次工具调用的入参/结果 |
@@ -71,7 +72,10 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
                     │ OpenAILLM  │         │ file_read    │
                     │ (任何 OpenAI│         │ file_write   │
                     │  兼容端点) │         │ web_search   │
-                    └────────────┘         │ + 你自定义的 │
+                    └────────────┘         │ web_fetch    │
+                                           │ recall       │
+                                           │ remember     │
+                                           │ + 你自定义的 │
                                            └──────────────┘
 ```
 
@@ -89,7 +93,7 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
 | Milestone 1 · MVP 骨架 | ✅ | Agent Loop、工具系统、CLI、配置、MockLLM |
 | Task 003 · 接入真实 LLM | ✅ | OpenAI SDK + AsyncOpenAI + 限流重试 + 错误分类 |
 | Task 004 · 浏览器 Web UI | ✅ | Chainlit + Step 可视化 + 多轮 + 场景按钮 + Settings 面板 |
-| Milestone 2 · 记忆系统 | 🔜 | 短期/长期记忆，Chroma 向量检索 |
+| **Task 007 · 记忆系统 + 真实检索** | ✅ | **短期滑动窗口 + LLM 摘要压缩；长期 Chroma 向量库；recall/remember 工具；Tavily/DuckDuckGo + trafilatura 真实联网** |
 | Milestone 3 · 多 Agent 编排 | 🔜 | 规划者 / 执行者 / 批改者分工 |
 
 ---
@@ -286,6 +290,101 @@ Agent 重启后就会自动发现这个工具并在合适时机调用它——**
 
 ---
 
+## 🧠 记忆系统（Task 007）
+
+### 为什么需要它？
+
+普通 LLM 调用是「无状态」的——同一个会话内靠 history 撑着，换一个浏览器标签页、明天再回来，AI 就完全不记得你是谁、上次聊到哪。Course Agent 在 Task 007 引入了**双层记忆**：
+
+| 层 | 实现 | 生命周期 | 解决的问题 |
+|---|---|---|---|
+| **短期记忆 ShortTermMemory** | 滑动窗口（默认 20 轮）+ **超过 16 轮自动用 LLM 把最旧那一半压缩成 ≤200 字摘要** | 单会话 | 长对话不爆 token、保留早期上下文要点 |
+| **长期记忆 LongTermMemory** | **Chroma `PersistentClient`**（cosine HNSW）+ Embedder | **跨会话持久化**（落盘到 `data/memory/<session_id>/`） | 关掉浏览器明天回来，AI 还记得"我喜欢用 Python" |
+
+### 工作流程
+
+每一轮 `on_message` 实际经过 [`MemoryManager.enrich_context()`](course_agent/memory/manager.py)：
+
+```
+用户输入 ──┐
+            ├──→ ① 用 user_input 去 long.recall(k=3) 检索语义最相关的历史片段
+            │       ──→ 注入一条 system message: [RELEVANT MEMORIES] ...
+            │
+            ├──→ ② short.compressed_history()
+            │       ──→ 拼上 [SUMMARY] xxx + 最近 N 轮原始消息
+            │
+            └──→ ③ 拼成最终 history 喂给 AgentLoop
+                    └──→ 回答完后 add_user / add_assistant 同步写入两层
+```
+
+### Embedder 自动选择
+
+[`embedders.create_embedder()`](course_agent/memory/embedders.py) 会按以下优先级挑：
+
+1. 设置了 `OPENAI_API_KEY` → **OpenAIEmbedder**（DashScope `text-embedding-v3` 或 OpenAI `text-embedding-3-small`，1024 维真实语义向量）
+2. 否则 → **HashEmbedder**（MD5+L2 归一化的 256 维 hash 向量，**完全离线、零依赖**，单测和 CI 默认走它）
+
+→ 这意味着**没有 Key 也能跑通整个记忆链路**，是 CI 友好的核心设计。
+
+### Agent 可调用的两个新工具
+
+| 工具 | 签名 | 干嘛 |
+|---|---|---|
+| `recall(query, k=3)` | 语义检索长期记忆 | LLM 觉得"我应该回忆一下用户之前说过什么"时主动调用 |
+| `remember(content, tag="note")` | 主动把一条信息写入长期记忆 | 用户说"记住我喜欢 Python"时，LLM 调用此工具固化 |
+
+### 在 Web UI 里使用
+
+打开右上角 ⚙️ Settings 面板，你会看到一个 **Switch: 启用长期记忆**：
+- 开（默认）：每会话独立 `data/memory/<session_id>/`，关闭浏览器后再回来，新会话依然能 `recall` 历史
+- 关：只保留单会话短期记忆，重启就忘
+
+切换 📐 数学 / 💻 编程 等场景按钮时，**只清空短期记忆，保留长期记忆**——这样切换学科不会丢失你的偏好。
+
+### 实测：跨会话回忆
+
+```
+会话 1：「请记住我的名字是小明，我最喜欢用 Python」
+        → LLM 调用 remember(content="小明喜欢 Python")
+        → Chroma 落盘到 data/memory/<sid_1>/
+
+[关闭浏览器，明天再开]
+
+会话 2（同一持久化目录）：「我之前告诉过你我叫什么吗？」
+        → enrich_context 自动 recall → 注入 [RELEVANT MEMORIES]
+        → LLM 回答：「你叫小明，喜欢 Python」 ✅（实测 score=0.52）
+```
+
+---
+
+## 🌐 真实 Web 检索（Task 007）
+
+旧版 `web_search` 只是返回固定字符串 mock。Task 007 接入了真实搜索：
+
+| Provider | 触发条件 | 说明 |
+|---|---|---|
+| **Tavily** | 设置了 `TAVILY_API_KEY` | 优先使用，质量最高，免费额度足够个人用 |
+| **DuckDuckGo** | 任何时候（保底） | 通过 [`ddgs`](https://github.com/deedy5/ddgs) 库无需 Key，完全免费 |
+
+外加一个 [`web_fetch(url, max_chars)`](course_agent/tools/web_tools.py) 工具：用 `httpx` 拉网页 → `trafilatura` 抽正文 → 失败回退到 HTML 标签剥离。这样 Agent 可以**先 search 拿 URL，再 fetch 拿正文**，组成完整的"搜+读"闭环。
+
+### 配置（可选）
+
+```env
+# 不配也能用 DuckDuckGo 兜底
+TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxx
+```
+
+### 试一下
+
+```bash
+uv run course-agent ui
+# 在界面里问："帮我搜一下 Python 3.13 有哪些新特性，并把第一个结果的正文抽出来"
+# Agent 会自动 web_search → web_fetch 两步
+```
+
+---
+
 ## 🧪 运行测试
 
 ```bash
@@ -295,11 +394,14 @@ uv run pytest
 # 包含在线集成测试（真实调用 LLM，需要 Key）
 RUN_LIVE_LLM=1 uv run pytest
 
+# 包含真实 DuckDuckGo / web_fetch 联网测试
+RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
+
 # 代码风格检查
 uv run ruff check .
 ```
 
-**当前测试状态**：24 passed + 3 skipped（live tests 默认跳过）。
+**当前测试状态**：54 passed + 5 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试）。
 
 ---
 
@@ -317,24 +419,32 @@ course_agent/
 │   └── factory.py        # create_llm(cfg) 工厂
 ├── tools/
 │   ├── registry.py       # @tool 装饰器 + JSON Schema 生成
-│   └── builtin.py        # calculator / file_read / file_write / web_search
+│   ├── builtin.py        # calculator / file_read / file_write
+│   └── web_tools.py      # 真实 web_search（Tavily / DuckDuckGo）+ web_fetch（trafilatura）
 ├── ui/
-│   ├── chainlit_app.py   # Web UI 入口：场景按钮 + Settings 面板 + 多轮
+│   ├── chainlit_app.py   # Web UI 入口：场景按钮 + Settings 面板 + 多轮 + 记忆开关
 │   └── adapters.py       # AgentCallbacks → Chainlit Step 适配
+├── memory/               # ✅ Task 007：会话记忆系统
+│   ├── base.py           # MemoryRecord / BaseMemory Protocol
+│   ├── embedders.py      # HashEmbedder（离线）/ OpenAIEmbedder（DashScope/OpenAI）
+│   ├── short_term.py     # 滑动窗口 + LLM 摘要压缩
+│   ├── long_term.py      # Chroma PersistentClient（cosine HNSW）
+│   ├── manager.py        # MemoryManager（enrich_context 注入相关记忆）
+│   └── tools.py          # @tool recall / remember 工具
 ├── agent/                # 🔜 Milestone 3：专用 Agent 角色
 ├── context/              # 🔜 Prompt 模板 / 上下文压缩
-├── memory/               # 🔜 Milestone 2：短期/长期记忆
 ├── orchestrator/         # 🔜 Milestone 3：多 Agent 编排
 ├── config.py             # Pydantic 配置 + .env 加载
 ├── logger.py             # loguru 包装
 └── cli.py                # typer + rich 的 CLI 入口
 
-tests/                    # 27 个测试：tools / agent_loop / config / llm / async
+tests/                    # 54 passed + 5 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页
-.env.example              # 环境变量模板
+.env.example              # 环境变量模板（API Key 占位符 + 5 家 Provider 示例）
 .python-version           # 锁定 Python 3.13
+data/memory/              # 长期记忆持久化目录（已加入 .gitignore，每会话一个子目录）
 ```
 
 ---
@@ -414,15 +524,17 @@ course-agent ui
 - [`task/task_004.md`](task/task_004.md) — Web UI 开发方案
 - [`task/task_005.md`](task/task_005.md) — Bug 报告归档
 - [`task/task_006.md`](task/task_006.md) — 文档重整需求（即本次）
+- [`task/task_007.md`](task/task_007.md) — 记忆系统 + 真实 Web 检索方案 ✅
 
 ---
 
 ## 🤝 贡献 & 下一步
 
 **当前最需要**：
-- 🧠 Memory 模块（Milestone 2）：会话摘要 + Chroma 向量检索
 - 🛠️ 更多工具：`python_exec`（沙箱执行代码）、`pdf_read`、`image_ocr`
 - 👥 Multi-Agent（Milestone 3）：Planner / Executor / Grader 角色分工
+- 🧪 长期记忆的清理 / 摘要 / TTL 策略
+- 🌐 更多检索 Provider：Brave Search、SerpAPI
 
 **开发规范**：
 - 修改代码后必须通过 `uv run pytest` 和 `uv run ruff check .`

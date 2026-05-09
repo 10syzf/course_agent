@@ -108,10 +108,18 @@ def ui(
         console.print(f"[bold red]找不到 UI 入口：{ui_entry}[/bold red]")
         raise typer.Exit(code=1)
 
+    # 显示 key 尾号 + 长度，便于排查"OS env 残留旧 key 污染 .env"这类诡异 401
+    key_info = "（未配置）"
+    if cfg.llm.api_key:
+        k = cfg.llm.api_key
+        key_info = f"...{k[-6:]} (len={len(k)})"
+
     console.print(
         Panel.fit(
             f"[bold cyan]Provider[/bold cyan]: {cfg.llm.provider}  "
             f"[bold cyan]Model[/bold cyan]: {cfg.llm.model}\n"
+            f"[bold cyan]API Key[/bold cyan]: {key_info}  "
+            f"[bold cyan]Base URL[/bold cyan]: {cfg.llm.base_url or '(default)'}\n"
             f"[bold green]Web UI 地址[/bold green]: http://{host}:{port}",
             title="🚀 Course Agent Web UI",
         )

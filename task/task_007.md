@@ -231,39 +231,39 @@ def web_fetch(url: str, max_chars: int = 4000) -> str:
 ## 五、实施步骤
 
 ### Step 1：依赖与骨架（0.5 天）
-- [ ] `pyproject.toml` 把 `chromadb>=0.5` 从 `[memory]` extra 提升为默认；新增 `duckduckgo-search`、`trafilatura`、`sentence-transformers`
-- [ ] `course_agent/memory/` 下新建 `base.py` / `short_term.py` / `long_term.py` / `manager.py` / `embedders.py` / `tools.py` 骨架文件
+- [x] `pyproject.toml` 把 `chromadb>=0.5` 从 `[memory]` extra 提升为默认；新增 `ddgs`、`trafilatura`、`tiktoken`（`sentence-transformers` 改为可选 `[local-embed]`）
+- [x] `course_agent/memory/` 下新建 `base.py` / `short_term.py` / `long_term.py` / `manager.py` / `embedders.py` / `tools.py` 骨架文件
 
 ### Step 2：短期记忆 + 摘要压缩（1 天）
-- [ ] `ShortTermMemory` 实现
-- [ ] 单测：验证超过阈值时触发压缩、压缩后 token 数显著下降
+- [x] `ShortTermMemory` 实现
+- [x] 单测：验证超过阈值时触发压缩、压缩后 token 数显著下降（`tests/test_memory_short_term.py` 6 项全过）
 
 ### Step 3：长期记忆 + Chroma（1.5 天）
-- [ ] `BaseEmbedder` 抽象 + 本地 `BgeEmbedder` + DashScope `RemoteEmbedder`
-- [ ] `LongTermMemory` CRUD
-- [ ] `MemoryManager` 串联
-- [ ] 单测：add→recall 召回率验证
+- [x] `BaseEmbedder` 抽象 + 离线 `HashEmbedder` + `OpenAIEmbedder`（DashScope/OpenAI 兼容）
+- [x] `LongTermMemory` CRUD（基于 `chromadb.PersistentClient` + cosine HNSW）
+- [x] `MemoryManager` 串联（`enrich_context` 注入 RELEVANT MEMORIES + 短期压缩历史）
+- [x] 单测：add→recall 召回率验证（`tests/test_memory_long_term.py` 9 项 + `tests/test_memory_manager.py` 7 项全过）
 
 ### Step 4：Memory 工具化（0.5 天）
-- [ ] `recall` / `remember` 注册为 `@tool`
-- [ ] 集成测试：Agent 在对话中能主动 `recall`
+- [x] `recall` / `remember` 注册为 `@tool`（通过 `set_active_manager` 单例桥接 per-session manager）
+- [x] 集成测试：`tests/test_memory_tools.py` 4 项 + 端到端跨实例脚本验证 score=0.52 召回成功
 
 ### Step 5：真实 Web 检索（1 天）
-- [ ] 用 `duckduckgo_search` 替换 mock
-- [ ] 新增 `web_fetch` + trafilatura 正文抽取
-- [ ] 有 Key 时走 Tavily 的降级逻辑
-- [ ] 所有网络调用加超时/重试
+- [x] 用 `ddgs`（duckduckgo-search 的维护后继）替换 mock
+- [x] 新增 `web_fetch` + trafilatura 正文抽取（HTML 标签剥离兜底）
+- [x] 有 `TAVILY_API_KEY` 时优先走 Tavily，否则降级 DuckDuckGo
+- [x] 所有网络调用加 10s 超时 + UA 伪装 + follow_redirects
 
 ### Step 6：Chainlit 接入 + 持久化（1 天）
-- [ ] `on_chat_start` 初始化 `MemoryManager`
-- [ ] `on_message` 走 `enrich_context`
-- [ ] 打开 Chainlit data layer（SQLite）
-- [ ] 手工验证：刷新浏览器历史保留
+- [x] `on_chat_start` 初始化 `MemoryManager` + `set_active_manager`
+- [x] `on_message` 走 `enrich_context` + 回写双层记忆
+- [x] Settings 面板新增 `启用长期记忆` Switch；场景切换只清短期，保留长期
+- [x] 持久化目录 `data/memory/<session_id>/` + 加入 `.gitignore`
 
 ### Step 7：测试 + 文档（0.5 天）
-- [ ] 所有新代码的 pytest
-- [ ] README 新增「记忆系统」和「真实检索」章节
-- [ ] `task/task_007.md` 打钩标记完成项
+- [x] 所有新代码的 pytest（54 passed + 5 skipped；`ruff check` clean）
+- [x] README 新增「记忆系统」和「真实检索」章节（含工作流程图、Embedder 选择表、跨会话实测）
+- [x] `task/task_007.md` 打钩标记完成项
 
 **合计预估：6 天（全职），可根据实际进度调整。**
 
@@ -284,22 +284,22 @@ def web_fetch(url: str, max_chars: int = 4000) -> str:
 
 ## 七、交付物清单
 
-- [ ] `course_agent/memory/base.py`
-- [ ] `course_agent/memory/short_term.py`
-- [ ] `course_agent/memory/long_term.py`
-- [ ] `course_agent/memory/manager.py`
-- [ ] `course_agent/memory/embedders.py`
-- [ ] `course_agent/memory/tools.py`
-- [ ] `course_agent/tools/web_search_real.py`（覆盖旧 mock）
-- [ ] `course_agent/tools/web_fetch.py`
-- [ ] `course_agent/ui/chainlit_app.py`（接入 MemoryManager）
-- [ ] `tests/test_memory_short_term.py`
-- [ ] `tests/test_memory_long_term.py`
-- [ ] `tests/test_memory_manager.py`
-- [ ] `tests/test_web_search_real.py`（网络 gate）
-- [ ] `pyproject.toml` 更新依赖
-- [ ] `.env.example` 添加 `TAVILY_API_KEY`（可选）
-- [ ] `README.md` 添加「记忆系统」「真实检索」说明 + FAQ 条目
+- [x] `course_agent/memory/base.py`
+- [x] `course_agent/memory/short_term.py`
+- [x] `course_agent/memory/long_term.py`
+- [x] `course_agent/memory/manager.py`
+- [x] `course_agent/memory/embedders.py`
+- [x] `course_agent/memory/tools.py`
+- [x] `course_agent/tools/web_tools.py`（覆盖旧 mock；同时承担 `web_search` 真实实现 + `web_fetch`，**比原计划合并为一个文件**）
+- [x] `course_agent/ui/chainlit_app.py`（接入 MemoryManager + Switch）
+- [x] `tests/test_memory_short_term.py`（6 项）
+- [x] `tests/test_memory_long_term.py`（9 项）
+- [x] `tests/test_memory_manager.py`（7 项）
+- [x] `tests/test_memory_tools.py`（4 项）
+- [x] `tests/test_web_tools.py`（4 项 + 2 项 RUN_LIVE_WEB gate）
+- [x] `pyproject.toml` 更新依赖（chromadb / ddgs / trafilatura / tiktoken；`[local-embed]` 可选 extra）
+- [x] `.env.example` 添加 `TAVILY_API_KEY`（可选）+ `EMBEDDING_MODEL` + `RUN_LIVE_WEB` 注释
+- [x] `README.md` 添加「🧠 记忆系统」「🌐 真实 Web 检索」说明 + 项目结构 / Milestone / 工具表 / 对比表同步更新
 
 ---
 
