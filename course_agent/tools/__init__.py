@@ -6,6 +6,8 @@ from course_agent.tools.registry import Tool, ToolRegistry, get_registry, tool
 
 from course_agent.tools import builtin  # noqa: F401  注册 calculator / file_read / file_write
 from course_agent.tools import web_tools  # noqa: F401  注册真实 web_search / web_fetch
+from course_agent.tools import python_exec as _python_exec  # noqa: F401  注册 python_exec
+from course_agent.tools import pdf_tools as _pdf_tools  # noqa: F401  注册 pdf_read
 from course_agent.memory import tools as _memory_tools  # noqa: F401  注册 recall / remember
 
 __all__ = ["Tool", "ToolRegistry", "get_registry", "tool"]

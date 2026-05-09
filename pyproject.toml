@@ -21,6 +21,7 @@ dependencies = [
     "ddgs>=6.1",
     "trafilatura>=1.12",
     "tiktoken>=0.7",
+    "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]

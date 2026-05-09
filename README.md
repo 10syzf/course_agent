@@ -93,7 +93,8 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
 | Milestone 1 · MVP 骨架 | ✅ | Agent Loop、工具系统、CLI、配置、MockLLM |
 | Task 003 · 接入真实 LLM | ✅ | OpenAI SDK + AsyncOpenAI + 限流重试 + 错误分类 |
 | Task 004 · 浏览器 Web UI | ✅ | Chainlit + Step 可视化 + 多轮 + 场景按钮 + Settings 面板 |
-| **Task 007 · 记忆系统 + 真实检索** | ✅ | **短期滑动窗口 + LLM 摘要压缩；长期 Chroma 向量库；recall/remember 工具；Tavily/DuckDuckGo + trafilatura 真实联网** |
+| Task 007 · 记忆系统 + 真实检索 | ✅ | 短期滑动窗口 + LLM 摘要压缩；长期 Chroma 向量库；recall/remember 工具；Tavily/DuckDuckGo + trafilatura 真实联网 |
+| **Task 008 · 让 Agent 真正动手做作业** | ✅ | **`python_exec` 沙箱（4 道安全闸）+ `pdf_read` PDF 阅读 + 错误分类细化（6 类）+ `course-agent doctor` 启动自检** |
 | Milestone 3 · 多 Agent 编排 | 🔜 | 规划者 / 执行者 / 批改者分工 |
 
 ---
@@ -385,6 +386,85 @@ uv run course-agent ui
 
 ---
 
+## 🔬 沙箱执行 `python_exec`（Task 008）
+
+让 Agent 写完 Python 代码后**真的跑一下**，把 `stdout / stderr / exit_code` 拿回来再回答你——不再靠 LLM「目测」结果。
+
+```bash
+# 在 UI 或 CLI 里直接对话
+uv run course-agent chat "写一个二分查找，并验证在 [3,5,7,11,13] 中找 7 的位置"
+# Agent 会：① 写代码 → ② 调用 python_exec 跑 → ③ 把真实 stdout 给你
+```
+
+**四道安全闸**（详见 [task_008.md §4.1](task/task_008.md)）：
+
+| 闸 | 防什么 | 怎么做 |
+|---|---|---|
+| ① AST 静态校验 | 恶意 import / `os.system` | 黑名单：`subprocess` / `socket` / `ctypes` / `shutil` / `multiprocessing` / `os.system|popen|exec*|fork` |
+| ② 隔离子进程 | 污染父进程 / 偷读 secret | 临时 cwd + `python -I -S` 隔离模式 + 净化 env（剥离 `OPENAI_*` / `AWS_*` / `*_proxy`） |
+| ③ 资源限制 | 死循环 / 内存炸 / fd 泄漏 | Linux/macOS：`RLIMIT_CPU=5s` + `RLIMIT_AS=256MB` + `RLIMIT_NOFILE=64` |
+| ④ 输出截断 | 巨量打印冲爆上下文 | stdout ≤ 8KB，stderr ≤ 4KB，超时 5s 强制 kill |
+
+⚠️ **半信任模型**：足够防住学生作业意外死循环 / 误删本地文件，但**不能**抵御主动攻击。生产环境部署请加 Docker / gVisor 强隔离。
+
+返回结构化 JSON：
+```json
+{"exit_code": 0, "stdout": "...", "stderr": "", "duration_ms": 87, "truncated": false, "timed_out": false}
+```
+
+---
+
+## 📄 PDF 阅读 `pdf_read`（Task 008）
+
+学生作业题目 90% 是 PDF。`file_read` 读 PDF 会出乱码——`pdf_read` 用 [`pypdf`](https://pypdf.readthedocs.io/) 抽纯文本：
+
+```bash
+# 直接对话
+uv run course-agent chat "请读一下 ~/Downloads/homework.pdf 第 1-3 页，告诉我题目要求"
+```
+
+支持参数：
+- `path` — 本地 PDF 路径
+- `page_range` — `"1-3"` / `"1,3,5"` / `"2-"` / `"-3"` / `""`（默认全部）
+- `max_chars` — 累计字符上限，默认 8000，硬上限 65536
+
+**扫描件友好提示**：当抽出文本极少（最大单页 < 10 字符）时，会明确告诉你这是扫描件 / 纯图像 PDF，并指引等待 Task 009 的 `image_ocr` 工具，**而不是返回空字符串**。
+
+返回示例：
+```
+[pdf_read] 文件：homework.pdf ｜ 共 5 页 ｜ 本次返回页：1,2,3 ｜ 截断：否
+
+[Page 1]
+本次作业：实现冒泡排序，并分析最坏时间复杂度。
+......
+```
+
+---
+
+## 🩺 启动自检 `course-agent doctor`（Task 008）
+
+Task 007 那次 `[LLM 认证失败]` 事故的产物——**不要等到第一次发消息才发现 Key 配错了**。
+
+```bash
+uv run course-agent doctor
+```
+
+7 项检查：
+
+| # | 项目 | 检查内容 |
+|---|---|---|
+| 1 | Python 版本 | 锁定 3.11~3.13；3.14 警告（chainlit/anyio 不兼容） |
+| 2 | 关键依赖 | `openai` / `chainlit` / `chromadb` / `pypdf` / `trafilatura` ... 10 个包 |
+| 3 | `.env` 文件 | 是否存在 + 大小 |
+| 4 | OPENAI_API_KEY | 显示尾号 6 位 + 长度；同时检测 shell OS env 是否残留旧 key |
+| 5 | LLM chat | 真实发一次 `ping`，记录 200/失败 + 时延 |
+| 6 | LLM embedding | 真实调一次 embed，记录 dim + 时延（失败 ⚠️ 自动降级 HashEmbedder，不算错） |
+| 7 | 工具注册 | 9 个工具是否全部就位 |
+
+任何 `❌` 都会让 doctor 退出码非 0，方便 CI / 容器健康检查接入。
+
+---
+
 ## 🧪 运行测试
 
 ```bash
@@ -401,7 +481,7 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：54 passed + 5 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试）。
+**当前测试状态**：96 passed + 6 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试）。
 
 ---
 
@@ -420,7 +500,9 @@ course_agent/
 ├── tools/
 │   ├── registry.py       # @tool 装饰器 + JSON Schema 生成
 │   ├── builtin.py        # calculator / file_read / file_write
-│   └── web_tools.py      # 真实 web_search（Tavily / DuckDuckGo）+ web_fetch（trafilatura）
+│   ├── web_tools.py      # 真实 web_search（Tavily / DuckDuckGo）+ web_fetch（trafilatura）
+│   ├── python_exec.py    # ✅ Task 008：沙箱化 Python 执行（AST 校验 + rlimit + 超时 + 截断）
+│   └── pdf_tools.py      # ✅ Task 008：pdf_read（pypdf 抽文本 + 扫描件友好提示）
 ├── ui/
 │   ├── chainlit_app.py   # Web UI 入口：场景按钮 + Settings 面板 + 多轮 + 记忆开关
 │   └── adapters.py       # AgentCallbacks → Chainlit Step 适配
@@ -436,9 +518,9 @@ course_agent/
 ├── orchestrator/         # 🔜 Milestone 3：多 Agent 编排
 ├── config.py             # Pydantic 配置 + .env 加载
 ├── logger.py             # loguru 包装
-└── cli.py                # typer + rich 的 CLI 入口
+└── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / **doctor**）
 
-tests/                    # 54 passed + 5 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools
+tests/                    # 96 passed + 6 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools / **python_exec / pdf_tools / error_classification / doctor**
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页

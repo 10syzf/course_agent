@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -146,6 +149,179 @@ def ui(
     except subprocess.CalledProcessError as e:
         console.print(f"[bold red]Chainlit 启动失败：{e}[/bold red]")
         raise typer.Exit(code=e.returncode) from e
+
+
+# ---------------------------------------------------------------------------
+# doctor: 启动自检 —— Task 008 §4.3
+# ---------------------------------------------------------------------------
+
+_DOCTOR_REQUIRED_PKGS = (
+    "openai",
+    "chainlit",
+    "chromadb",
+    "pypdf",
+    "trafilatura",
+    "loguru",
+    "rich",
+    "typer",
+    "yaml",
+    "pydantic_settings",
+)
+
+
+def _check_python_version() -> tuple[str, str, str]:
+    import sys
+
+    v = sys.version_info
+    ver = f"{v.major}.{v.minor}.{v.micro}"
+    if (v.major, v.minor) < (3, 11):
+        return ("❌", ver, "需要 Python >=3.11，请重建虚拟环境")
+    if (v.major, v.minor) >= (3, 14):
+        return ("⚠️", ver, "Python 3.14 与 chainlit/anyio 已知不兼容；建议锁 3.13")
+    return ("✅", ver, "")
+
+
+def _check_deps() -> tuple[str, str, str]:
+    import importlib
+
+    missing: list[str] = []
+    for name in _DOCTOR_REQUIRED_PKGS:
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            missing.append(name)
+    if missing:
+        return ("❌", f"缺少 {len(missing)} 个", f"请执行 `uv sync` 后重试，缺失：{', '.join(missing)}")
+    return ("✅", f"{len(_DOCTOR_REQUIRED_PKGS)} 个就位", "")
+
+
+def _check_env_file() -> tuple[str, str, str]:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    env_file = root / ".env"
+    if not env_file.exists():
+        return ("⚠️", "不存在", "请 `cp .env.example .env` 后填入 OPENAI_API_KEY")
+    size = env_file.stat().st_size
+    return ("✅", f"存在 ({size} bytes)", "")
+
+
+def _check_api_key(cfg: Any) -> tuple[str, str, str]:
+    import os
+
+    key = cfg.llm.api_key
+    if not key:
+        return ("❌", "未配置", "请在 .env 中设置 OPENAI_API_KEY=sk-xxx")
+    tail = f"...{key[-6:]} (len={len(key)})"
+    os_key = os.environ.get("OPENAI_API_KEY")
+    extra = ""
+    if os_key and os_key != key:
+        # 因为 load_dotenv override=True，.env 已经赢了，但提示用户存在残留
+        extra = "⚠️ shell 也设置了 OPENAI_API_KEY 但已被 .env override"
+    return ("✅", tail, extra)
+
+
+def _check_llm_chat(cfg: Any) -> tuple[str, str, str]:
+    import time as _t
+
+    if cfg.llm.provider == "mock" or not cfg.llm.api_key:
+        return ("⚠️", "跳过", "provider=mock 或未配置 key，跳过真实连通性测试")
+    try:
+        from course_agent.llm.base import LLMMessage
+        llm = create_llm(cfg.llm)
+        t0 = _t.perf_counter()
+        resp = llm.chat([LLMMessage(role="user", content="ping")])
+        dt = int((_t.perf_counter() - t0) * 1000)
+        if resp.finish_reason == "error":
+            return ("❌", f"{cfg.llm.model} 失败", resp.content[:200])
+        return ("✅", f"{cfg.llm.model} 200 OK ({dt}ms)", "")
+    except Exception as e:  # noqa: BLE001
+        return ("❌", f"{type(e).__name__}", str(e)[:200])
+
+
+def _check_llm_embedding(cfg: Any) -> tuple[str, str, str]:
+    import os
+    import time as _t
+
+    if not cfg.llm.api_key:
+        return ("⚠️", "跳过", "未配置 key；记忆系统将自动降级为 HashEmbedder")
+    try:
+        from course_agent.memory.embedders import OpenAIEmbedder
+        model = os.getenv("OPENAI_EMBEDDING_MODEL")
+        if not model:
+            base = cfg.llm.base_url or ""
+            model = "text-embedding-3-small" if "openai.com" in base else "text-embedding-v3"
+        emb = OpenAIEmbedder(model=model, api_key=cfg.llm.api_key, base_url=cfg.llm.base_url)
+        t0 = _t.perf_counter()
+        v = emb.embed("ping")
+        dt = int((_t.perf_counter() - t0) * 1000)
+        return ("✅", f"{model} 200 OK ({dt}ms, dim={len(v)})", "")
+    except Exception as e:  # noqa: BLE001
+        return ("⚠️", f"{type(e).__name__}", f"嵌入不可用，将自动降级 HashEmbedder：{str(e)[:160]}")
+
+
+def _check_tools() -> tuple[str, str, str]:
+    try:
+        names = get_registry().list_names()
+        return ("✅", f"{len(names)} 个", ", ".join(names))
+    except Exception as e:  # noqa: BLE001
+        return ("❌", "注册失败", str(e)[:200])
+
+
+@app.command()
+def doctor() -> None:
+    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / Tools 七项检查."""
+    setup_logger()
+
+    console.print(Panel.fit("🩺 Course Agent 健康检查", style="bold cyan"))
+
+    cfg = get_config()
+
+    checks: list[tuple[str, Callable[[], tuple[str, str, str]]]] = [
+        ("Python 版本", lambda: _check_python_version()),
+        ("关键依赖", lambda: _check_deps()),
+        (".env 文件", lambda: _check_env_file()),
+        ("OPENAI_API_KEY", lambda: _check_api_key(cfg)),
+        ("LLM 连通性 (chat)", lambda: _check_llm_chat(cfg)),
+        ("LLM 连通性 (embedding)", lambda: _check_llm_embedding(cfg)),
+        ("工具注册", lambda: _check_tools()),
+    ]
+
+    table = Table(show_lines=False, header_style="bold magenta")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("项目", style="cyan", no_wrap=True)
+    table.add_column("状态", width=4)
+    table.add_column("详情", style="white")
+    table.add_column("提示", style="yellow")
+
+    pass_count = 0
+    fail_count = 0
+    warn_count = 0
+    total = len(checks)
+
+    for i, (label, fn) in enumerate(checks, 1):
+        try:
+            status, detail, hint = fn()
+        except Exception as e:  # noqa: BLE001  每步独立 try，全部跑完再汇总
+            status, detail, hint = ("❌", "异常", str(e)[:200])
+
+        if status == "✅":
+            pass_count += 1
+        elif status == "⚠️":
+            warn_count += 1
+        else:
+            fail_count += 1
+
+        table.add_row(f"{i}/{total}", label, status, detail, hint)
+
+    console.print(table)
+
+    summary = f"通过 {pass_count}/{total}  ｜  警告 {warn_count}  ｜  失败 {fail_count}"
+    if fail_count == 0:
+        console.print(Panel.fit(f"✨ {summary} —— 可以开始使用", style="bold green"))
+    else:
+        console.print(Panel.fit(f"⛔ {summary} —— 请先按上表提示修复", style="bold red"))
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
