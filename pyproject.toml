@@ -22,6 +22,7 @@ dependencies = [
     "trafilatura>=1.12",
     "tiktoken>=0.7",
     "pypdf>=4.0",
+    "pypdfium2>=4.0",
 ]
 
 [project.optional-dependencies]

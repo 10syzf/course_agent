@@ -8,6 +8,8 @@ from course_agent.tools import builtin  # noqa: F401  注册 calculator / file_r
 from course_agent.tools import web_tools  # noqa: F401  注册真实 web_search / web_fetch
 from course_agent.tools import python_exec as _python_exec  # noqa: F401  注册 python_exec
 from course_agent.tools import pdf_tools as _pdf_tools  # noqa: F401  注册 pdf_read
+from course_agent.tools import image_ocr as _image_ocr  # noqa: F401  注册 image_ocr (Task 009)
+from course_agent.tools import code_solve as _code_solve  # noqa: F401  注册 code_solve (Task 009)
 from course_agent.memory import tools as _memory_tools  # noqa: F401  注册 recall / remember
 
 __all__ = ["Tool", "ToolRegistry", "get_registry", "tool"]
