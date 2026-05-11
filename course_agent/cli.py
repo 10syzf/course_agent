@@ -268,9 +268,75 @@ def _check_tools() -> tuple[str, str, str]:
         return ("❌", "注册失败", str(e)[:200])
 
 
+# 用 stdlib 现场合成一张 64×64 白色灰度 PNG（约 100 字节）做探活。
+# 不能用 1×1：阿里百炼 Qwen-VL 等服务端对最小宽高有限制（实测拒 height:1/width:1）。
+# 64×64 是各家多模态 API 都接受的安全下限，且生成成本几乎为 0。
+def _make_probe_png() -> bytes:
+    """用纯 stdlib（struct + zlib）合成一张 64×64 白色灰度 PNG."""
+    import struct
+    import zlib
+
+    width = height = 64
+    sig = b"\x89PNG\r\n\x1a\n"
+
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)  # 8-bit 灰度
+    raw = b"".join(b"\x00" + b"\xff" * width for _ in range(height))
+    idat = zlib.compress(raw, level=9)
+    return sig + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+
+
+def _check_vl_chat() -> tuple[str, str, str]:
+    """第 8 项：多模态 LLM 连通性（Task 009）.
+
+    走的是 image_ocr 工具背后同一份 VL 配置；用 64×64 PNG 做最小代价探活，
+    既验证 VL_MODEL / VL_API_KEY / VL_BASE_URL 三件套，又确认 base_url 支持
+    多模态消息格式 (content=[{type:text}, {type:image_url}])。
+    """
+    import time as _t
+
+    from course_agent.tools.image_ocr import (
+        _build_data_url,
+        _call_vl,
+        _get_vl_config,
+        _vl_configured,
+    )
+
+    if not _vl_configured():
+        return (
+            "⚠️",
+            "跳过",
+            "未配置 VL_MODEL；image_ocr 与 pdf_read 扫描兜底将自动降级",
+        )
+    model, base_url, api_key = _get_vl_config()
+    if not api_key:
+        return ("❌", "缺 API Key", "请在 .env 中配置 VL_API_KEY 或 OPENAI_API_KEY")
+    try:
+        data = _make_probe_png()
+        data_url = _build_data_url(data, "image/png")
+        t0 = _t.perf_counter()
+        text = _call_vl(data_url, "describe in one word", model, base_url, api_key)
+        dt = int((_t.perf_counter() - t0) * 1000)
+        snippet = (text or "").strip().replace("\n", " ")[:30]
+        return ("✅", f"{model} 200 OK ({dt}ms)", f"返回: {snippet!r}")
+    except Exception as e:  # noqa: BLE001
+        return (
+            "❌",
+            f"{type(e).__name__}",
+            f"{str(e)[:160]}（请检查 VL_BASE_URL 是否支持多模态）",
+        )
+
+
 @app.command()
 def doctor() -> None:
-    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / Tools 七项检查."""
+    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools 八项检查."""
     setup_logger()
 
     console.print(Panel.fit("🩺 Course Agent 健康检查", style="bold cyan"))
@@ -284,6 +350,7 @@ def doctor() -> None:
         ("OPENAI_API_KEY", lambda: _check_api_key(cfg)),
         ("LLM 连通性 (chat)", lambda: _check_llm_chat(cfg)),
         ("LLM 连通性 (embedding)", lambda: _check_llm_embedding(cfg)),
+        ("VL 多模态连通性", lambda: _check_vl_chat()),
         ("工具注册", lambda: _check_tools()),
     ]
 

@@ -16,6 +16,7 @@ import ast
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -34,6 +35,18 @@ _MAX_STDERR = 4 * 1024
 _MEM_LIMIT_BYTES = 256 * 1024 * 1024
 _NOFILE_LIMIT = 64
 _CPU_TIME_LIMIT = 5
+
+# Task 009：受控的 extra_packages 白名单（数据科学 / 数学 / 网络题目最常用 6 个）
+_ALLOWED_PACKAGES: set[str] = {
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "scipy",
+    "sympy",
+    "requests",
+}
+_PIP_INSTALL_TIMEOUT = 120
+_PKG_CACHE_DIR = Path("~/.cache/course-agent/pkgs").expanduser()
 
 # 黑名单：模块层 import / from-import 出现这些就直接拒绝
 # 注意：保留 socket（pypdf / trafilatura 都不需要它），不破坏现有工具
@@ -137,26 +150,38 @@ def _truncate(data: bytes, limit: int) -> tuple[str, bool]:
     return data[:limit].decode("utf-8", errors="replace") + "\n...[truncated]", True
 
 
-async def _arun_code(code: str, stdin: str, timeout: int) -> dict[str, object]:
+async def _arun_code(
+    code: str,
+    stdin: str,
+    timeout: int,
+    extra_pythonpath: str | None = None,
+) -> dict[str, object]:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="pyexec_") as tmpdir:
         script = Path(tmpdir) / "main.py"
         script.write_text(code, encoding="utf-8")
+
+        env = _build_clean_env()
+        if extra_pythonpath:
+            # 注入白名单包目录；保留可能的现有 PYTHONPATH（理论上 _build_clean_env 已剥离）
+            env["PYTHONPATH"] = extra_pythonpath
 
         kwargs: dict[str, object] = {
             "stdin": asyncio.subprocess.PIPE,
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.PIPE,
             "cwd": tmpdir,
-            "env": _build_clean_env(),
+            "env": env,
         }
         if sys.platform != "win32":
             kwargs["preexec_fn"] = _set_subprocess_limits  # type: ignore[assignment]
 
+        # extra_packages 模式下不能用 -I（会忽略 PYTHONPATH）；只用 -S 防 site-packages 用户目录
+        py_flags = ["-S"] if extra_pythonpath else ["-I", "-S"]
+
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
-            "-I",  # isolated mode：忽略 PYTHON* 环境变量、site-packages 用户目录
-            "-S",
+            *py_flags,
             str(script),
             **kwargs,  # type: ignore[arg-type]
         )
@@ -193,7 +218,12 @@ async def _arun_code(code: str, stdin: str, timeout: int) -> dict[str, object]:
         }
 
 
-def _run_code_sync(code: str, stdin: str, timeout: int) -> dict[str, object]:
+def _run_code_sync(
+    code: str,
+    stdin: str,
+    timeout: int,
+    extra_pythonpath: str | None = None,
+) -> dict[str, object]:
     """同步入口：在已有 event loop 时用线程池兜底."""
     try:
         loop = asyncio.get_running_loop()
@@ -203,9 +233,65 @@ def _run_code_sync(code: str, stdin: str, timeout: int) -> dict[str, object]:
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(asyncio.run, _arun_code(code, stdin, timeout))
+            fut = ex.submit(asyncio.run, _arun_code(code, stdin, timeout, extra_pythonpath))
             return fut.result()
-    return asyncio.run(_arun_code(code, stdin, timeout))
+    return asyncio.run(_arun_code(code, stdin, timeout, extra_pythonpath))
+
+
+def _ensure_packages(packages: list[str]) -> tuple[str | None, str | None]:
+    """白名单校验 + pip install --target 到缓存目录.
+
+    Returns:
+        (pythonpath, error)：成功返回 (cache_dir, None)；失败返回 (None, 错误信息)。
+    """
+    if not packages:
+        return None, None
+
+    # 1) 白名单校验
+    not_allowed = sorted(set(packages) - _ALLOWED_PACKAGES)
+    if not_allowed:
+        return None, (
+            f"以下包不在白名单：{not_allowed}；"
+            f"当前允许：{sorted(_ALLOWED_PACKAGES)}"
+        )
+
+    # 2) 缓存目录（每个包一个子目录，方便复用）
+    _PKG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    target = _PKG_CACHE_DIR / "shared"
+    target.mkdir(parents=True, exist_ok=True)
+
+    # 3) 检查每个包是否已就位（看 cache_dir 下是否有 <pkg> 顶层目录）
+    missing = [p for p in packages if not (target / p).exists() and not (target / f"{p}.py").exists()]
+
+    if missing:
+        _log.info(f"python_exec: pip install --target={target} {missing}")
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--target",
+                    str(target),
+                    "--disable-pip-version-check",
+                    "--no-input",
+                    "--quiet",
+                    *missing,
+                ],
+                check=True,
+                timeout=_PIP_INSTALL_TIMEOUT,
+                capture_output=True,
+            )
+        except subprocess.TimeoutExpired:
+            return None, f"pip install 超过 {_PIP_INSTALL_TIMEOUT}s 超时（{missing}）"
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or b"").decode("utf-8", errors="replace")[:500]
+            return None, f"pip install 失败（{missing}）：{err}"
+        except Exception as e:  # noqa: BLE001
+            return None, f"pip install 异常：{type(e).__name__}: {e}"
+
+    return str(target), None
 
 
 @tool(
@@ -217,14 +303,23 @@ def _run_code_sync(code: str, stdin: str, timeout: int) -> dict[str, object]:
         "适合：算法验证、数据处理、自检测试用例、'写完代码立刻跑一下'。"
         "禁止 import：subprocess / ctypes / socket / shutil / multiprocessing，"
         "及 os.system/popen/exec*/fork。"
+        "可选 extra_packages 白名单装包：numpy / pandas / matplotlib / scipy / sympy / requests。"
     ),
 )
-def python_exec(code: str, stdin: str = "", timeout: int = 5) -> str:
+def python_exec(
+    code: str,
+    stdin: str = "",
+    timeout: int = 5,
+    extra_packages: list[str] | None = None,
+) -> str:
     """在沙箱中执行 Python 代码.
 
     :param code: 要执行的 Python 源码字符串（≤16KB）.
     :param stdin: 喂给子进程的标准输入（可选）.
     :param timeout: 超时秒数（1~30，默认 5）.
+    :param extra_packages: 可选白名单包列表，例如 ["numpy"]；
+        装包到 ~/.cache/course-agent/pkgs/shared 并注入 PYTHONPATH，复用缓存。
+        允许集合：numpy / pandas / matplotlib / scipy / sympy / requests。
     """
     if not isinstance(code, str) or not code.strip():
         return json.dumps({"error": "code 不能为空"}, ensure_ascii=False)
@@ -243,9 +338,21 @@ def python_exec(code: str, stdin: str = "", timeout: int = 5) -> str:
         _log.warning(f"python_exec 拒绝执行：{err}")
         return json.dumps({"error": f"AST 校验失败：{err}"}, ensure_ascii=False)
 
-    result = _run_code_sync(code, stdin or "", timeout)
+    extra_pythonpath: str | None = None
+    if extra_packages:
+        if not isinstance(extra_packages, list) or not all(isinstance(p, str) for p in extra_packages):
+            return json.dumps(
+                {"error": "extra_packages 必须是字符串列表，例如 [\"numpy\"]"},
+                ensure_ascii=False,
+            )
+        extra_pythonpath, pkg_err = _ensure_packages(extra_packages)
+        if pkg_err:
+            return json.dumps({"error": f"extra_packages 准备失败：{pkg_err}"}, ensure_ascii=False)
+
+    result = _run_code_sync(code, stdin or "", timeout, extra_pythonpath)
     _log.info(
         f"python_exec done: exit={result['exit_code']}, "
-        f"duration={result['duration_ms']}ms, timed_out={result['timed_out']}"
+        f"duration={result['duration_ms']}ms, timed_out={result['timed_out']}, "
+        f"extra_packages={extra_packages or []}"
     )
     return json.dumps(result, ensure_ascii=False)

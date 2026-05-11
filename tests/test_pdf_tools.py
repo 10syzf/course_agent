@@ -131,11 +131,12 @@ def test_read_truncation(tmp_path):
 
 
 def test_read_scan_pdf_friendly_hint(tmp_path):
-    """全部页面都是空文本（模拟扫描件）→ 应给友好提示."""
+    """全部页面都是空文本（模拟扫描件）→ 没装/没配 VL 时应给 OCR 兜底未启用提示."""
     pdf = _make_pdf(tmp_path, ["", ""])
     out = pdf_read(str(pdf))
     assert "扫描件" in out or "纯图像" in out
-    assert "Task 009" in out
+    # Task 009 后：OCR 兜底未配置时给出明确提示；已配置则会出现 "[Page 1 (OCR)]"
+    assert ("兜底 OCR 未启用" in out) or ("[Page 1 (OCR)]" in out)
 
 
 def test_read_file_not_exist():

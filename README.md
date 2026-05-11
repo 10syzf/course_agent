@@ -95,6 +95,7 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
 | Task 004 · 浏览器 Web UI | ✅ | Chainlit + Step 可视化 + 多轮 + 场景按钮 + Settings 面板 |
 | Task 007 · 记忆系统 + 真实检索 | ✅ | 短期滑动窗口 + LLM 摘要压缩；长期 Chroma 向量库；recall/remember 工具；Tavily/DuckDuckGo + trafilatura 真实联网 |
 | **Task 008 · 让 Agent 真正动手做作业** | ✅ | **`python_exec` 沙箱（4 道安全闸）+ `pdf_read` PDF 阅读 + 错误分类细化（6 类）+ `course-agent doctor` 启动自检** |
+| **Task 009 · 让 Agent「看见」+「自己批改」** | ✅ | **`image_ocr` 多模态视觉（Qwen-VL/GPT-4V）+ `code_solve` 自批改闭环（写→跑→改最多 3 轮）+ `python_exec` 白名单装包（numpy/pandas/scipy/...）+ `pdf_read` 扫描件 OCR 兜底 + Chainlit 拖拽图片上传 + doctor 第 8 项 VL 连通性** |
 | Milestone 3 · 多 Agent 编排 | 🔜 | 规划者 / 执行者 / 批改者分工 |
 
 ---
@@ -428,7 +429,7 @@ uv run course-agent chat "请读一下 ~/Downloads/homework.pdf 第 1-3 页，�
 - `page_range` — `"1-3"` / `"1,3,5"` / `"2-"` / `"-3"` / `""`（默认全部）
 - `max_chars` — 累计字符上限，默认 8000，硬上限 65536
 
-**扫描件友好提示**：当抽出文本极少（最大单页 < 10 字符）时，会明确告诉你这是扫描件 / 纯图像 PDF，并指引等待 Task 009 的 `image_ocr` 工具，**而不是返回空字符串**。
+**扫描件 OCR 兜底**（Task 009）：当抽出文本极少（最大单页 < 10 字符）时，会自动尝试用 `pypdfium2` 把第一页渲染成 PNG 并调 `image_ocr` 抽文字（前提：装了 `pypdfium2` + 在 `.env` 配置了 `VL_MODEL`）。否则给出明确的「兜底 OCR 未启用」提示，**绝不返回空字符串**。
 
 返回示例：
 ```
@@ -449,7 +450,7 @@ Task 007 那次 `[LLM 认证失败]` 事故的产物——**不要等到第一�
 uv run course-agent doctor
 ```
 
-7 项检查：
+7 项检查（Task 009 起新增第 8 项「VL 多模态连通性」共 8 项）：
 
 | # | 项目 | 检查内容 |
 |---|---|---|
@@ -459,9 +460,100 @@ uv run course-agent doctor
 | 4 | OPENAI_API_KEY | 显示尾号 6 位 + 长度；同时检测 shell OS env 是否残留旧 key |
 | 5 | LLM chat | 真实发一次 `ping`，记录 200/失败 + 时延 |
 | 6 | LLM embedding | 真实调一次 embed，记录 dim + 时延（失败 ⚠️ 自动降级 HashEmbedder，不算错） |
-| 7 | 工具注册 | 9 个工具是否全部就位 |
+| 7 | **VL 多模态连通性**（Task 009） | 配了 `VL_MODEL` 时用 1×1 PNG 真实探活；未配则 ⚠️ 跳过并提示「`image_ocr` 与 `pdf_read` 扫描兜底将自动降级」 |
+| 8 | 工具注册 | 11 个工具是否全部就位 |
 
 任何 `❌` 都会让 doctor 退出码非 0，方便 CI / 容器健康检查接入。
+
+---
+
+## 🖼️ 图片识别 `image_ocr`（Task 009）
+
+让 Agent 能「看见」——把学生拍的题目截图、黑板板书、手写公式、扫描件截图喂给多模态 LLM（Qwen-VL / GPT-4V / Claude Vision）抽出纯文本。
+
+```bash
+# 1. 在 .env 配置（可选；不配时工具会友好降级，不抛错）
+VL_MODEL=qwen-vl-plus
+VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+VL_API_KEY=sk-xxx     # 不填则自动复用 OPENAI_API_KEY
+
+# 2. CLI 体验
+uv run course-agent chat "请用 image_ocr 识别 ~/Pictures/board.jpg 然后帮我解题"
+
+# 3. Web UI 直接拖图（推荐）
+uv run course-agent ui
+# 在对话框拖入 1~3 张图（≤10 MB / 张），Agent 会自动调 image_ocr
+```
+
+**实现要点**：
+- 路径 / URL **自动判别**：URL 用 `httpx` 下载到内存；本地路径直接读
+- 字节 → base64 → `data:image/...;base64,` data URL（OpenAI 多模态消息格式）
+- `temperature=0.0` 确定性输出；`max_tokens=2048`
+- 图片大小 ≤ 10 MB；输出截断 ≤ 16 KB
+- **未配置 VL_MODEL / 调用失败 / 返回空** 三种情况都返回友好的 `[image_ocr] ...` 提示，**绝不抛异常**
+
+---
+
+## 🔁 自批改闭环 `code_solve`（Task 009）
+
+Task 008 让 Agent 能「跑代码」，Task 009 让 Agent 能「写错了**自己改**」——把「写 → 跑 → 失败 → 改 → 再跑」这个循环显式编排出来，最多 N 轮，**有硬上限不会死循环**。
+
+```bash
+# 在 UI / CLI 里这样问：
+uv run course-agent chat "用 code_solve 写一个判断回文数的函数 is_palindrome(n)，
+用 assert is_palindrome(121) == True 和 assert is_palindrome(123) == False 验证"
+
+# Agent 会：
+#   ① LLM 写代码 → ② python_exec 跑（含自动追加的断言）
+#   ③ exit_code == 0 → 通过 ✅
+#      exit_code != 0 → 把 stderr 截前 1KB 喂回 LLM，让它**只返回完整修正后的代码**
+#   ④ 重复 ②③ 最多 max_rounds 轮（默认 3，硬上限 5）
+```
+
+**返回结构化 JSON**：
+```json
+{
+  "success": true,
+  "rounds": 2,                 // 实际花了几轮
+  "code": "def is_palindrome(n):\n    ...\n# === auto tests ===\nassert ...",
+  "last_error": "",
+  "attempts": [
+    {"round": 1, "code": "...", "exit_code": 1, "stderr": "AssertionError ..."},
+    {"round": 2, "code": "...", "exit_code": 0, "stderr": ""}
+  ]
+}
+```
+
+**失败诚实返回**：故意给一个无解需求（"写一个永远返回 True 的函数让 `assert f(0) == False`"），3 轮后会返回 `success=False` + `已尝试 3 轮仍未通过`，**不会无限烧 token**。
+
+**实现要点**：
+- 工具内部通过 `course_agent.llm.factory.get_default_llm()` 拿 LLM 单例
+- 第 1 轮 / 重试轮用**不同的 system prompt**：第 1 轮要求只用标准库；重试轮明确「只返回修正后完整代码，不要解释、不要道歉」
+- 用正则 ```` ```python ... ``` ```` 抽代码块，找不到就把整段当代码兜底
+- 喂回 LLM 的 stderr 截断 1KB，避免上下文越滚越长
+
+---
+
+## 📦 沙箱白名单装包 `python_exec(extra_packages=...)`（Task 009）
+
+Task 008 的沙箱默认 `python -I -S` 完全隔离，**连 `numpy` 都 import 不到**——对纯 stdlib 的算法题够用，但数据科学 / 数学题就抓瞎了。Task 009 给 `python_exec` 加了一个**受控的白名单装包**机制：
+
+```python
+# Agent 可以这样调（白名单内的包按需 pip install --target 到本地缓存）
+python_exec(
+    code="import numpy as np\nprint(np.zeros(3).sum())",
+    extra_packages=["numpy"],   # 仅允许白名单内的包
+)
+```
+
+**白名单**（6 个）：`numpy / pandas / matplotlib / scipy / sympy / requests` —— 覆盖 90% 的数据科学 / 数学 / 简单网络题目。
+
+**安全设计**：
+- ❌ 任意包名（如 `pyyaml` / `evil-pkg`）会被**直接拒绝**，返回 `[error] ... 不在白名单`
+- 装包目录：`~/.cache/course-agent/pkgs/shared/`（**跨调用复用**，第 2 次起秒级）
+- 已在缓存里的包跳过 `pip install`；缺的才装；超过 120s 超时报错
+- 装完通过 `PYTHONPATH` 注入子进程；同时把 `python -I -S` 降级为 `python -S`（`-I` 会忽略 `PYTHONPATH`，必须降级），但 AST 黑名单 / 净化 env / rlimit / 超时 / 输出截断**全部保留**
+- ✅ **完全向后兼容**：不传 `extra_packages` 时行为与 Task 008 100% 一致
 
 ---
 
@@ -481,7 +573,7 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：96 passed + 6 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试）。
+**当前测试状态**：125 passed + 6 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试）。
 
 ---
 
@@ -501,8 +593,10 @@ course_agent/
 │   ├── registry.py       # @tool 装饰器 + JSON Schema 生成
 │   ├── builtin.py        # calculator / file_read / file_write
 │   ├── web_tools.py      # 真实 web_search（Tavily / DuckDuckGo）+ web_fetch（trafilatura）
-│   ├── python_exec.py    # ✅ Task 008：沙箱化 Python 执行（AST 校验 + rlimit + 超时 + 截断）
-│   └── pdf_tools.py      # ✅ Task 008：pdf_read（pypdf 抽文本 + 扫描件友好提示）
+│   ├── python_exec.py    # ✅ Task 008 + 009：沙箱化 Python 执行（4 道安全闸 + extra_packages 白名单装包）
+│   ├── pdf_tools.py      # ✅ Task 008 + 009：pdf_read（pypdf 抽文本 + 扫描件 image_ocr 兜底）
+│   ├── image_ocr.py      # ✅ Task 009：多模态视觉 OCR（Qwen-VL / GPT-4V / Claude Vision）
+│   └── code_solve.py     # ✅ Task 009：自批改闭环（写→跑→改最多 N 轮，硬上限 5）
 ├── ui/
 │   ├── chainlit_app.py   # Web UI 入口：场景按钮 + Settings 面板 + 多轮 + 记忆开关
 │   └── adapters.py       # AgentCallbacks → Chainlit Step 适配
@@ -520,7 +614,7 @@ course_agent/
 ├── logger.py             # loguru 包装
 └── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / **doctor**）
 
-tests/                    # 96 passed + 6 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools / **python_exec / pdf_tools / error_classification / doctor**
+tests/                    # 125 passed + 6 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools / **python_exec / pdf_tools / error_classification / doctor / image_ocr / code_solve / python_exec_packages / pdf_ocr_fallback**
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页

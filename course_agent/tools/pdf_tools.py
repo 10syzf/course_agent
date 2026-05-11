@@ -21,6 +21,74 @@ _HARD_MAX_CHARS = 64 * 1024
 # 扫描件判别：所有处理过的页面**最长**那一页的文本长度都 < 阈值时，认定为扫描件 / 纯图像 PDF。
 # 用 max-per-page 而不是 total，避免短 PDF（如 "Hello world"）被误判。
 _SCAN_PER_PAGE_THRESHOLD = 10
+# Task 009：扫描件兜底 OCR 渲染参数
+_OCR_FALLBACK_RENDER_SCALE = 2.0  # 渲染清晰度（约 144 DPI）
+_OCR_FALLBACK_MAX_PAGES = 1  # 兜底只 OCR 第一页，避免烧 token
+
+
+def _try_ocr_first_page(pdf_path: Path) -> str | None:
+    """检测到扫描件时，尝试用 pypdfium2 渲染第一页 → 调 image_ocr.
+
+    Returns:
+        - None：pypdfium2 不可用 / 渲染失败 / image_ocr 未配置等，由调用方走原 friendly 提示
+        - str：成功拿到 OCR 文本（不为空），由调用方拼到返回里
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        _log.info("pypdfium2 未安装，跳过 OCR 兜底")
+        return None
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"pypdfium2 import 异常：{e}")
+        return None
+
+    try:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"pypdfium2 打开 PDF 失败：{e}")
+        return None
+
+    if len(pdf) == 0:
+        return None
+
+    try:
+        page = pdf[0]
+        bitmap = page.render(scale=_OCR_FALLBACK_RENDER_SCALE)
+        pil_image = bitmap.to_pil()
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"pypdfium2 渲染页面失败：{e}")
+        return None
+
+    # 落到临时 PNG，再交给 image_ocr（image_ocr 内部已处理「未配置 VL」降级）
+    try:
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            prefix="pdf_ocr_", suffix=".png", delete=False
+        ) as tmp:
+            tmp_path = tmp.name
+        pil_image.save(tmp_path, format="PNG")
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"PNG 保存失败：{e}")
+        return None
+
+    try:
+        from course_agent.tools.image_ocr import image_ocr as _image_ocr
+
+        text = _image_ocr(tmp_path)
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"image_ocr 调用失败：{e}")
+        text = None
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not text:
+        return None
+    # image_ocr 的降级提示也是 [image_ocr] 开头；直接透传给上层即可
+    return text
 
 
 def _parse_page_range(spec: str, total: int) -> list[int]:
@@ -131,11 +199,23 @@ def pdf_read(
         accumulated += len(block)
 
     if max_page_chars < _SCAN_PER_PAGE_THRESHOLD:
-        return (
+        # Task 009：先尝试用 pypdfium2 + image_ocr 兜底（只 OCR 第一页）
+        ocr_text = _try_ocr_first_page(p)
+        header_scan = (
             f"[pdf_read] 该 PDF（共 {total} 页，已扫描页 {len(pages)}）"
             f"几乎抽不到文字（最大单页 {max_page_chars} 字符），"
             "看起来是扫描件 / 纯图像 PDF。\n"
-            "请等待 Task 009 的 image_ocr 工具支持，或先用其它 OCR 工具转成纯文本 PDF。"
+        )
+        if ocr_text:
+            return (
+                header_scan
+                + "已自动用 image_ocr 抽取**第 1 页**作为兜底（建议追问 Agent 继续 OCR 后续页面）：\n\n"
+                + f"[Page 1 (OCR)]\n{ocr_text}\n"
+            )
+        return (
+            header_scan
+            + "兜底 OCR 未启用（pypdfium2 未安装 或 VL_MODEL 未配置 或 调用失败）。\n"
+            "  → 请在 .env 中配置 VL_MODEL / VL_API_KEY 后重试，或先用其它 OCR 工具转纯文本 PDF。"
         )
 
     header = (

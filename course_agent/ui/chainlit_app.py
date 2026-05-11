@@ -92,6 +92,23 @@ def _build_history(history: list[dict]) -> list[LLMMessage]:
     return [LLMMessage(**h) for h in history]
 
 
+def _extract_image_paths(message: cl.Message) -> list[str]:
+    """从 Chainlit 消息附件中提取本地图片路径（Task 009）.
+
+    Chainlit 把用户拖拽 / 上传的图片包装为 `cl.Image` 元素，落地后通过
+    `.path` 暴露本地临时路径，agent 可以直接传给 `image_ocr` 工具。
+    """
+    paths: list[str] = []
+    elements = getattr(message, "elements", None) or []
+    for el in elements:
+        if not isinstance(el, cl.Image):
+            continue
+        path = getattr(el, "path", None)
+        if path:
+            paths.append(str(path))
+    return paths
+
+
 def _reset_history(system_prompt: str) -> list[dict]:
     return [LLMMessage(role="system", content=system_prompt).model_dump()]
 
@@ -340,7 +357,7 @@ async def on_settings_update(settings: dict) -> None:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    """处理用户发送的消息（带记忆增强）."""
+    """处理用户发送的消息（带记忆增强 + Task 009 图片上传）."""
     agent: AgentLoop | None = cl.user_session.get("agent")
     history_raw: list[dict] = cl.user_session.get("history") or []
     memory: MemoryManager | None = cl.user_session.get("memory")
@@ -351,6 +368,22 @@ async def on_message(message: cl.Message) -> None:
         ).send()
         return
 
+    # Task 009：检测用户上传的图片，落地到临时路径并把路径注入用户输入
+    user_text = message.content or ""
+    image_paths = _extract_image_paths(message)
+    if image_paths:
+        path_lines = "\n".join(f"- {p}" for p in image_paths)
+        user_text = (
+            f"{user_text}\n\n"
+            f"【用户上传了 {len(image_paths)} 张图片，本地路径如下，"
+            "请使用 image_ocr 工具抽取文字后再回答】\n"
+            f"{path_lines}"
+        ).strip()
+        await cl.Message(
+            content=f"📎 收到 {len(image_paths)} 张图片，已自动提示 Agent 调用 image_ocr 抽取文字。",
+            author="System",
+        ).send()
+
     # 关键：每次进入消息处理都要把 active manager 切到本 session 的 manager
     set_active_manager(memory)
 
@@ -359,7 +392,7 @@ async def on_message(message: cl.Message) -> None:
     # 用 MemoryManager 重建增强上下文（注入长期记忆相关片段 + 短期摘要）
     if memory is not None:
         try:
-            enriched = await memory.enrich_context(message.content, base_history)
+            enriched = await memory.enrich_context(user_text, base_history)
         except Exception as e:  # noqa: BLE001
             _log.warning(f"enrich_context 失败，回退到裸历史：{e}")
             enriched = base_history
@@ -369,7 +402,7 @@ async def on_message(message: cl.Message) -> None:
     callbacks = ChainlitCallbacks()
 
     result = await agent.arun(
-        user_input=message.content,
+        user_input=user_text,
         history=enriched,
         callbacks=callbacks,
     )
@@ -377,13 +410,13 @@ async def on_message(message: cl.Message) -> None:
     # 写入记忆（短期 + 可选长期）
     if memory is not None:
         try:
-            await memory.add_user(message.content)
+            await memory.add_user(user_text)
             await memory.add_assistant(result.answer)
         except Exception as e:  # noqa: BLE001
             _log.warning(f"写入记忆失败：{e}")
 
     # 更新 session 历史：追加本轮的 user + assistant
-    history_raw.append(LLMMessage(role="user", content=message.content).model_dump())
+    history_raw.append(LLMMessage(role="user", content=user_text).model_dump())
     history_raw.append(
         LLMMessage(role="assistant", content=result.answer).model_dump()
     )

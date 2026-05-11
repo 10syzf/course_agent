@@ -9,6 +9,13 @@ unsafe_allow_html = false
 latex = true
 auto_tag_thread = true
 
+# Task 009：允许用户拖拽图片到对话框（image_ocr 工具会被自动调用）
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["image/*"]
+max_files = 3
+max_size_mb = 10
+
 [UI]
 name = "Course Agent"
 default_expand_messages = false

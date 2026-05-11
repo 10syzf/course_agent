@@ -30,3 +30,25 @@ def create_llm(cfg: LLMConfig | None = None) -> BaseLLM:
         )
 
     raise ValueError(f"未知的 LLM provider: {provider}")
+
+
+# 进程级 LLM 单例（Task 009 引入，给 code_solve 这种「工具内部需要调 LLM」的场景用）
+_default_llm: BaseLLM | None = None
+
+
+def get_default_llm() -> BaseLLM:
+    """返回进程级默认 LLM 单例（首次调用时按当前 .env 配置创建并缓存）.
+
+    使用场景：code_solve / 其它「在工具内部调 LLM 写代码 / 写答案」的元工具。
+    注意：不要用它替换 AgentLoop 的注入式 llm（那个仍由调用方控制）。
+    """
+    global _default_llm
+    if _default_llm is None:
+        _default_llm = create_llm()
+    return _default_llm
+
+
+def reset_default_llm() -> None:
+    """重置默认 LLM 单例（仅测试用：换 mock 或换配置后调用）."""
+    global _default_llm
+    _default_llm = None

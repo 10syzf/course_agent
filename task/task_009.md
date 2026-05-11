@@ -91,14 +91,14 @@
 
 ### 3.2 成功指标
 
-1. [ ] 用户在 Chainlit 上传一张手写数学题截图 → Agent 自动调 `image_ocr` → 抽出题目 → 解题
-2. [ ] `pdf_read` 检测到扫描件时，回复里**直接附上**"已尝试 OCR 第一页：xxxxx"（而不是只说"请等待"）
-3. [ ] 给 Agent 一道题：「写一个判断回文数的函数，用 `assert is_palindrome(121) == True; assert is_palindrome(123) == False` 验证」→ 第一次写错时 Agent **自动修正再跑**，最终 `exit_code == 0`
-4. [ ] 自批改回合数有上限：故意给一个无解的需求（"写一个永远返回 True 的函数让 `assert f(0) == False`"），3 轮后给出"我尝试了 3 次仍不通过"的诚实回复，**不无限循环**
-5. [ ] `python_exec(code, extra_packages=["numpy"])` 能成功 `import numpy as np; print(np.zeros(3))`
-6. [ ] `course-agent doctor` 第 8 项显示多模态 LLM 状态（未配置时 ⚠️ 跳过，配了就真发一次 ping）
-7. [ ] 所有新代码有单元测试，`pytest` 与 `ruff` 全绿
-8. [ ] 完全向后兼容：Task 008 的 `python_exec` 不传 `extra_packages` 时行为完全不变
+1. [x] 用户在 Chainlit 上传一张手写数学题截图 → Agent 自动调 `image_ocr` → 抽出题目 → 解题
+2. [x] `pdf_read` 检测到扫描件时，回复里**直接附上**"已尝试 OCR 第一页：xxxxx"（而不是只说"请等待"）
+3. [x] 给 Agent 一道题：「写一个判断回文数的函数，用 `assert is_palindrome(121) == True; assert is_palindrome(123) == False` 验证」→ 第一次写错时 Agent **自动修正再跑**，最终 `exit_code == 0`
+4. [x] 自批改回合数有上限：故意给一个无解的需求（"写一个永远返回 True 的函数让 `assert f(0) == False`"），3 轮后给出"我尝试了 3 次仍不通过"的诚实回复，**不无限循环**
+5. [x] `python_exec(code, extra_packages=["numpy"])` 能成功 `import numpy as np; print(np.zeros(3))`
+6. [x] `course-agent doctor` 第 8 项显示多模态 LLM 状态（未配置时 ⚠️ 跳过，配了就真发一次 ping）
+7. [x] 所有新代码有单元测试，`pytest` 与 `ruff` 全绿
+8. [x] 完全向后兼容：Task 008 的 `python_exec` 不传 `extra_packages` 时行为完全不变
 
 ---
 
@@ -252,39 +252,39 @@ max_size_mb = 10
 - [x] `.env.example` 新增 `VL_MODEL` / `VL_BASE_URL` / `VL_API_KEY` 三行（带注释）
 
 ### Step 2：`image_ocr` 实现（1 天）
-- [ ] 路径 / URL 自动判别 + 下载
-- [ ] base64 编码 + OpenAI 多模态消息格式
-- [ ] 调 LLM + 错误降级（未配置 VL 时返回友好提示）
-- [ ] 单测：mock httpx + mock LLM；真实集成测试 `RUN_LIVE_VL=1` 才跑
+- [x] 路径 / URL 自动判别 + 下载
+- [x] base64 编码 + OpenAI 多模态消息格式
+- [x] 调 LLM + 错误降级（未配置 VL 时返回友好提示）
+- [x] 单测：mock httpx + mock LLM；真实集成测试 `RUN_LIVE_VL=1` 才跑
 
 ### Step 3：`code_solve` 自批改闭环（1 天）
-- [ ] LLM 单例获取（factory 加 `get_default_llm()`）
-- [ ] system prompt 设计："你是 Python 程序员，根据需求和失败信息写完整代码"
-- [ ] 循环：写 → 跑 → 解析 → 反馈 → 再写
-- [ ] 单测：mock LLM + 真实 python_exec；验证「正确题第 1 轮通过」「错误题用 3 轮后失败诚实返回」
+- [x] LLM 单例获取（factory 加 `get_default_llm()`）
+- [x] system prompt 设计："你是 Python 程序员，根据需求和失败信息写完整代码"
+- [x] 循环：写 → 跑 → 解析 → 反馈 → 再写
+- [x] 单测：mock LLM + 真实 python_exec；验证「正确题第 1 轮通过」「错误题用 3 轮后失败诚实返回」
 
 ### Step 4：`python_exec` extra_packages（0.5 天）
-- [ ] 白名单常量 `_ALLOWED_PACKAGES`
-- [ ] `pip install --target` 到 `~/.cache/course-agent/pkgs/`
-- [ ] 子进程 `PYTHONPATH` 注入
-- [ ] 单测：mock pip install；真实 `RUN_LIVE_PIP=1` 才装 numpy 验证
+- [x] 白名单常量 `_ALLOWED_PACKAGES`
+- [x] `pip install --target` 到 `~/.cache/course-agent/pkgs/`
+- [x] 子进程 `PYTHONPATH` 注入
+- [x] 单测：mock pip install；真实 `RUN_LIVE_PIP=1` 才装 numpy 验证
 
 ### Step 5：`pdf_read` 扫描件 → OCR 兜底（0.5 天）
-- [ ] 检测到扫描件时，try import pypdfium2
-- [ ] 渲染第一页 → 临时 PNG → 调 `image_ocr`
-- [ ] 单测：mock image_ocr，验证返回拼接正确
+- [x] 检测到扫描件时，try import pypdfium2
+- [x] 渲染第一页 → 临时 PNG → 调 `image_ocr`
+- [x] 单测：mock image_ocr，验证返回拼接正确
 
 ### Step 6：Chainlit 图片上传（0.5 天）
-- [ ] `.chainlit/config.toml` 打开 `spontaneous_file_upload`
-- [ ] `chainlit_app.py` 处理 `message.elements` 中的 `cl.Image`
-- [ ] 落地临时文件 + 自动给 LLM 加提示
-- [ ] 手动验证：拖一张题目截图进对话框，看 Agent 是否自动调 OCR
+- [x] `.chainlit/config.toml` 打开 `spontaneous_file_upload`
+- [x] `chainlit_app.py` 处理 `message.elements` 中的 `cl.Image`
+- [x] 落地临时文件 + 自动给 LLM 加提示
+- [x] 手动验证：拖一张题目截图进对话框，看 Agent 是否自动调 OCR
 
 ### Step 7：doctor 第 8 项 + 测试 + 文档（0.5 天）
-- [ ] [`cli.py:doctor`](../course_agent/cli.py) 新增「多模态 LLM 连通性」检查
-- [ ] 全量 `uv run pytest -q` 与 `uv run ruff check .` 全绿
-- [ ] [README.md](../README.md) 新增「🖼️ 图片识别 image_ocr」「🔁 自批改闭环 code_solve」「📦 沙箱白名单包」三节
-- [ ] [task/task_009.md](task_009.md) 全部交付物打钩
+- [x] [`cli.py:doctor`](../course_agent/cli.py) 新增「多模态 LLM 连通性」检查
+- [x] 全量 `uv run pytest -q` 与 `uv run ruff check .` 全绿
+- [x] [README.md](../README.md) 新增「🖼️ 图片识别 image_ocr」「🔁 自批改闭环 code_solve」「📦 沙箱白名单包」三节
+- [x] [task/task_009.md](task_009.md) 全部交付物打钩
 
 **合计预估：4.5 天**
 
@@ -306,22 +306,22 @@ max_size_mb = 10
 
 ## 七、交付物清单
 
-- [ ] [`course_agent/tools/image_ocr.py`](../course_agent/tools/image_ocr.py)
-- [ ] [`course_agent/tools/code_solve.py`](../course_agent/tools/code_solve.py)
-- [ ] [`course_agent/tools/python_exec.py`](../course_agent/tools/python_exec.py)（新增 `extra_packages` 参数）
-- [ ] [`course_agent/tools/pdf_tools.py`](../course_agent/tools/pdf_tools.py)（扫描件 → OCR 兜底）
-- [ ] [`course_agent/tools/__init__.py`](../course_agent/tools/__init__.py)（注册新工具）
-- [ ] [`course_agent/llm/factory.py`](../course_agent/llm/factory.py) 新增 `get_default_llm()` 单例
-- [ ] [`course_agent/cli.py`](../course_agent/cli.py) doctor 第 8 项
-- [ ] [`course_agent/ui/chainlit_app.py`](../course_agent/ui/chainlit_app.py) 图片上传
-- [ ] [`.chainlit/config.toml`](../.chainlit/config.toml) `spontaneous_file_upload` 开关
-- [ ] `tests/test_image_ocr.py`（≥ 5 项：路径 / URL / 未配置降级 / mock 多模态调用 / 错误处理）
-- [ ] `tests/test_code_solve.py`（≥ 4 项：第 1 轮通过 / 多轮通过 / 达上限失败 / mock LLM 写出语法错误）
-- [ ] `tests/test_python_exec_packages.py`（≥ 3 项：白名单拒绝 / 无 extra_packages 兼容 / mock pip install）
-- [ ] `tests/test_pdf_ocr_fallback.py`（≥ 2 项：mock image_ocr 拼接 / 无 pypdfium2 时降级）
-- [ ] `pyproject.toml` 新增 `pypdfium2>=4.0`
-- [ ] `.env.example` 新增 VL 三行
-- [ ] [`README.md`](../README.md) 新增 3 节 + 工具表 / Milestone / 项目结构同步
+- [x] [`course_agent/tools/image_ocr.py`](../course_agent/tools/image_ocr.py)
+- [x] [`course_agent/tools/code_solve.py`](../course_agent/tools/code_solve.py)
+- [x] [`course_agent/tools/python_exec.py`](../course_agent/tools/python_exec.py)（新增 `extra_packages` 参数）
+- [x] [`course_agent/tools/pdf_tools.py`](../course_agent/tools/pdf_tools.py)（扫描件 → OCR 兜底）
+- [x] [`course_agent/tools/__init__.py`](../course_agent/tools/__init__.py)（注册新工具）
+- [x] [`course_agent/llm/factory.py`](../course_agent/llm/factory.py) 新增 `get_default_llm()` 单例
+- [x] [`course_agent/cli.py`](../course_agent/cli.py) doctor 第 8 项
+- [x] [`course_agent/ui/chainlit_app.py`](../course_agent/ui/chainlit_app.py) 图片上传
+- [x] [`.chainlit/config.toml`](../.chainlit/config.toml) `spontaneous_file_upload` 开关
+- [x] `tests/test_image_ocr.py`（≥ 5 项：路径 / URL / 未配置降级 / mock 多模态调用 / 错误处理）
+- [x] `tests/test_code_solve.py`（≥ 4 项：第 1 轮通过 / 多轮通过 / 达上限失败 / mock LLM 写出语法错误）
+- [x] `tests/test_python_exec_packages.py`（≥ 3 项：白名单拒绝 / 无 extra_packages 兼容 / mock pip install）
+- [x] `tests/test_pdf_ocr_fallback.py`（≥ 2 项：mock image_ocr 拼接 / 无 pypdfium2 时降级）
+- [x] `pyproject.toml` 新增 `pypdfium2>=4.0`
+- [x] `.env.example` 新增 VL 三行
+- [x] [`README.md`](../README.md) 新增 3 节 + 工具表 / Milestone / 项目结构同步
 
 ---
 
