@@ -10,6 +10,8 @@ from course_agent.tools import python_exec as _python_exec  # noqa: F401  注册
 from course_agent.tools import pdf_tools as _pdf_tools  # noqa: F401  注册 pdf_read
 from course_agent.tools import image_ocr as _image_ocr  # noqa: F401  注册 image_ocr (Task 009)
 from course_agent.tools import code_solve as _code_solve  # noqa: F401  注册 code_solve (Task 009)
+from course_agent.tools import mistake_book as _mistake_book  # noqa: F401  注册 add_mistake / list_mistakes / review_mistake (Task 010)
+from course_agent.tools import kb as _kb  # noqa: F401  注册 kb_ingest / kb_search (Task 010)
 from course_agent.memory import tools as _memory_tools  # noqa: F401  注册 recall / remember
 
 __all__ = ["Tool", "ToolRegistry", "get_registry", "tool"]

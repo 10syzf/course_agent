@@ -251,6 +251,22 @@ async def on_chat_start() -> None:
         actions=_scene_actions(),
     ).send()
 
+    # Task 010：主动学习提示——查询今日待复习错题数
+    try:
+        from course_agent.storage.mistake_db import count_due_today
+
+        due = count_due_today()
+    except Exception:  # noqa: BLE001
+        due = 0
+    if due > 0:
+        await cl.Message(
+            content=(
+                f"📓 **今天有 {due} 道错题待复习**  \n"
+                "输入 `/mistakes` 查看清单，或直接告诉我「开始复习」我陪你过一遍。"
+            ),
+            author="System",
+        ).send()
+
 
 @cl.action_callback("scene")
 async def on_scene_action(action: cl.Action) -> None:
@@ -368,6 +384,42 @@ async def on_message(message: cl.Message) -> None:
         ).send()
         return
 
+    # Task 010：/mistakes slash 分支——直接列出错题，不走 LLM
+    if (message.content or "").strip().lower().startswith("/mistakes"):
+        try:
+            from course_agent.storage.mistake_db import (
+                count_due_today,
+                list_mistakes_db,
+            )
+
+            rows = list_mistakes_db(tag="", due_only=False, limit=20)
+            n_due = count_due_today()
+        except Exception as e:  # noqa: BLE001
+            await cl.Message(
+                content=f"❌ 读取错题本失败：{type(e).__name__}: {e}",
+                author="System",
+            ).send()
+            return
+        if not rows:
+            await cl.Message(
+                content="📭 错题本还是空的——做错题后告诉我「记入错题本」即可写入。",
+                author="System",
+            ).send()
+            return
+        lines = [
+            f"📓 **错题本**（共 {len(rows)} 条 · 今日待复习 {n_due}）",
+            "| ID | 题目（截断 60） | 标签 | 复习次数 | 下次复习 |",
+            "|---|---|---|---|---|",
+        ]
+        for r in rows:
+            q = r["question"]
+            q = q if len(q) <= 60 else q[:57] + "..."
+            lines.append(
+                f"| {r['id']} | {q} | {r.get('tags') or '-'} | "
+                f"{r['repetitions']} | {r['next_review_at'][:10]} |"
+            )
+        await cl.Message(content="\n".join(lines), author="Course Agent").send()
+        return
     # Task 009：检测用户上传的图片，落地到临时路径并把路径注入用户输入
     user_text = message.content or ""
     image_paths = _extract_image_paths(message)

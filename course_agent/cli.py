@@ -19,6 +19,95 @@ from course_agent.tools import get_registry
 app = typer.Typer(help="Course Agent - 帮助学生完成课程作业的智能 Agent (MVP)")
 console = Console()
 
+# Task 010：错题本 CLI 子命令
+mistakes_app = typer.Typer(help="错题本管理（Task 010）")
+app.add_typer(mistakes_app, name="mistakes")
+
+
+@mistakes_app.command("list")
+def mistakes_list(
+    tag: str = typer.Option("", "--tag", help="按标签过滤，例如 '线代'"),
+    limit: int = typer.Option(20, "--limit", help="最多显示多少条（上限 200）"),
+) -> None:
+    """列出错题（按创建或下次复习时间升序）."""
+    setup_logger()
+    from course_agent.storage.mistake_db import list_mistakes_db
+
+    rows = list_mistakes_db(tag=tag, due_only=False, limit=limit)
+    if not rows:
+        console.print("📭 错题本还是空的，去 Chainlit 或用工具写入第一道错题吧～")
+        return
+    table = Table(title=f"📓 错题本（共 {len(rows)} 条）", show_lines=False)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("题目（截断 60）", style="white")
+    table.add_column("标签", style="yellow")
+    table.add_column("复习次数", style="magenta")
+    table.add_column("下次复习", style="green")
+    for r in rows:
+        q = r["question"]
+        q = q if len(q) <= 60 else q[:57] + "..."
+        table.add_row(
+            str(r["id"]),
+            q,
+            r.get("tags") or "-",
+            str(r["repetitions"]),
+            r["next_review_at"][:10],
+        )
+    console.print(table)
+
+
+@mistakes_app.command("due")
+def mistakes_due(
+    limit: int = typer.Option(20, "--limit", help="最多显示多少条"),
+) -> None:
+    """列出今日待复习的错题."""
+    setup_logger()
+    from course_agent.storage.mistake_db import count_due_today, list_mistakes_db
+
+    rows = list_mistakes_db(tag="", due_only=True, limit=limit)
+    n = count_due_today()
+    if not rows:
+        console.print(f"🎉 今天暂无待复习错题（total due={n}）。")
+        return
+    table = Table(title=f"📅 今日待复习（共 {n} 道）", show_lines=False)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("题目", style="white")
+    table.add_column("标签", style="yellow")
+    table.add_column("下次复习", style="green")
+    for r in rows:
+        q = r["question"]
+        q = q if len(q) <= 80 else q[:77] + "..."
+        table.add_row(str(r["id"]), q, r.get("tags") or "-", r["next_review_at"][:10])
+    console.print(table)
+
+
+@mistakes_app.command("review")
+def mistakes_review(
+    mistake_id: int = typer.Argument(..., help="错题 ID"),
+    quality: int = typer.Argument(..., help="0-5：0=完全不会 / 5=秒答"),
+) -> None:
+    """对一道错题打分，更新 SM-2 间隔."""
+    setup_logger()
+    from course_agent.storage.mistake_db import review_mistake_db
+
+    if quality < 0 or quality > 5:
+        console.print("[bold red]quality 必须在 0-5 之间[/bold red]")
+        raise typer.Exit(code=1)
+    row = review_mistake_db(mistake_id, quality)
+    if row is None:
+        console.print(f"[bold red]找不到错题 #{mistake_id}[/bold red]")
+        raise typer.Exit(code=1)
+    console.print(
+        Panel.fit(
+            f"已对 #{mistake_id} 打分 {quality}。\n"
+            f"下次复习：[bold green]{row['next_review_at'][:10]}[/bold green]\n"
+            f"当前间隔：{row['interval_days']} 天\n"
+            f"easiness：{row['easiness']:.2f}\n"
+            f"连续答对：{row['repetitions']} 次",
+            title="✅ 复习完成",
+        )
+    )
+
 
 @app.command()
 def chat(
@@ -268,6 +357,40 @@ def _check_tools() -> tuple[str, str, str]:
         return ("❌", "注册失败", str(e)[:200])
 
 
+def _check_mistake_kb() -> tuple[str, str, str]:
+    """第 9 项：错题本 SQLite 可读写 + 教材库 Chroma collection 状态（Task 010）."""
+    try:
+        from course_agent.storage.mistake_db import (
+            count_due_today,
+            ensure_schema,
+            get_db_path,
+        )
+
+        db_path = get_db_path()
+        ensure_schema()
+        n_due = count_due_today()
+        kb_path = "—"
+        kb_n = 0
+        try:
+            from course_agent.tools.kb import _kb_count, _kb_persist_dir
+
+            kb_n = _kb_count()
+            kb_path = str(_kb_persist_dir())
+        except Exception as e:  # noqa: BLE001
+            return (
+                "⚠️",
+                "教材库不可用",
+                f"错题本 OK（待复习 {n_due}）；教材库初始化失败：{type(e).__name__}: {e}",
+            )
+        return (
+            "✅",
+            f"待复习 {n_due} ｜ 教材库 {kb_n} chunks",
+            f"db={db_path}；kb_dir={kb_path}",
+        )
+    except Exception as e:  # noqa: BLE001
+        return ("❌", type(e).__name__, str(e)[:200])
+
+
 # 用 stdlib 现场合成一张 64×64 白色灰度 PNG（约 100 字节）做探活。
 # 不能用 1×1：阿里百炼 Qwen-VL 等服务端对最小宽高有限制（实测拒 height:1/width:1）。
 # 64×64 是各家多模态 API 都接受的安全下限，且生成成本几乎为 0。
@@ -336,7 +459,7 @@ def _check_vl_chat() -> tuple[str, str, str]:
 
 @app.command()
 def doctor() -> None:
-    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools 八项检查."""
+    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools / 错题本+教材库 九项检查."""
     setup_logger()
 
     console.print(Panel.fit("🩺 Course Agent 健康检查", style="bold cyan"))
@@ -352,6 +475,7 @@ def doctor() -> None:
         ("LLM 连通性 (embedding)", lambda: _check_llm_embedding(cfg)),
         ("VL 多模态连通性", lambda: _check_vl_chat()),
         ("工具注册", lambda: _check_tools()),
+        ("错题本 + 教材库", lambda: _check_mistake_kb()),
     ]
 
     table = Table(show_lines=False, header_style="bold magenta")

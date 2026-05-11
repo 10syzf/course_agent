@@ -96,6 +96,7 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
 | Task 007 · 记忆系统 + 真实检索 | ✅ | 短期滑动窗口 + LLM 摘要压缩；长期 Chroma 向量库；recall/remember 工具；Tavily/DuckDuckGo + trafilatura 真实联网 |
 | **Task 008 · 让 Agent 真正动手做作业** | ✅ | **`python_exec` 沙箱（4 道安全闸）+ `pdf_read` PDF 阅读 + 错误分类细化（6 类）+ `course-agent doctor` 启动自检** |
 | **Task 009 · 让 Agent「看见」+「自己批改」** | ✅ | **`image_ocr` 多模态视觉（Qwen-VL/GPT-4V）+ `code_solve` 自批改闭环（写→跑→改最多 3 轮）+ `python_exec` 白名单装包（numpy/pandas/scipy/...）+ `pdf_read` 扫描件 OCR 兜底 + Chainlit 拖拽图片上传 + doctor 第 8 项 VL 连通性** |
+| **Task 010 · 让 Agent「记得住错」+「翻得到书」** | ✅ | **错题本（SQLite + SM-2 间隔复习）+ 教材 RAG（kb_ingest / kb_search 复用 Chroma 独立 collection）+ Chainlit 主动学习提示 + `/mistakes` 命令 + CLI `course-agent mistakes` 子命令 + doctor 第 9 项错题本+教材库** |
 | Milestone 3 · 多 Agent 编排 | 🔜 | 规划者 / 执行者 / 批改者分工 |
 
 ---
@@ -461,7 +462,8 @@ uv run course-agent doctor
 | 5 | LLM chat | 真实发一次 `ping`，记录 200/失败 + 时延 |
 | 6 | LLM embedding | 真实调一次 embed，记录 dim + 时延（失败 ⚠️ 自动降级 HashEmbedder，不算错） |
 | 7 | **VL 多模态连通性**（Task 009） | 配了 `VL_MODEL` 时用 1×1 PNG 真实探活；未配则 ⚠️ 跳过并提示「`image_ocr` 与 `pdf_read` 扫描兜底将自动降级」 |
-| 8 | 工具注册 | 11 个工具是否全部就位 |
+| 8 | 工具注册 | 16 个工具是否全部就位 |
+| 9 | 错题本 + 教材库 | SQLite mistakes.db 可读写 + Chroma kb_textbook chunk 数 |
 
 任何 `❌` 都会让 doctor 退出码非 0，方便 CI / 容器健康检查接入。
 
@@ -557,6 +559,83 @@ python_exec(
 
 ---
 
+## 📓 错题本（Task 010）
+
+Memory 系统是「相似度检索」，但**陪学的核心是错题分类账**——学生错过什么 / 多久没复习 / 今天该过什么——这些都需要结构化的状态而不是向量回忆。Task 010 用 **SQLite + SM-2 间隔复习算法**实现了一个轻量的「错题账本」。
+
+**3 个工具**（Agent 可以自动调用）：
+
+```python
+# 1) 记入一道错题
+add_mistake(
+    question="什么是 RSA 加密？",
+    correct_answer="基于大整数分解困难的非对称加密",
+    tags="密码学,RSA",
+    source="textbook P.42",
+)
+# → ✅ 已记入错题本（#1）。
+
+# 2) 查询错题
+list_mistakes(tag="密码学")          # 按标签过滤
+list_mistakes(due_only=True)         # 仅今日待复习
+list_mistakes(limit=20)              # 默认 20 条
+
+# 3) 复习打分（0-5 → SM-2 算法更新下次复习日期）
+review_mistake(mistake_id=1, quality=5)
+# 0=完全不会 / 1=想起来但错 / 2=错但有印象 / 3=磕巴对 / 4=流畅对 / 5=秒答
+# quality<3 → 间隔重置为 1 天；quality≥3 → 1 天 → 6 天 → 6×EF 天 → ...
+```
+
+**CLI 子命令**（不进 Chainlit 也能管错题）：
+
+```bash
+uv run course-agent mistakes list                # 列全部
+uv run course-agent mistakes list --tag 线代     # 按标签过滤
+uv run course-agent mistakes due                 # 今日待复习
+uv run course-agent mistakes review 3 5          # 对 #3 打 5 分
+```
+
+**Chainlit 集成**：
+- 启动时若有今日待复习错题，欢迎语后**自动追加** `📓 今天有 N 道错题待复习` 提示
+- 输入 `/mistakes` 直接列表（不走 LLM，秒回）
+
+**存储**：`~/.cache/course-agent/mistakes.db`（与 `python_exec` 包缓存同根，`course-agent doctor` 第 9 项一并检查）。
+
+---
+
+## 📚 教材 RAG `kb_ingest` + `kb_search`（Task 010）
+
+把整本教材一次性塞进 context 既贵又会爆——但学生提问时确实需要 Agent **能翻到原文**。Task 010 做了一个**轻量的本地教材 RAG**：
+
+```python
+# 1) 摄入一份教材（PDF / Markdown / TXT）
+kb_ingest("data/textbook/discrete_math.pdf")
+# → ✅ 已摄入 312 个 chunk，来源：discrete_math.pdf（共 280 页）。
+#   PDF 自动按页切，并把页码写入 metadata；扫描件 PDF 走 Task 009 的 image_ocr 兜底。
+
+# 2) 检索带页码的相关段落
+kb_search("RSA 加密原理", top_k=3)
+# → 📚 教材库检索：query='RSA 加密原理'，命中 3 段
+#    --- [📚 discrete_math.pdf P.42] ---
+#    RSA 是一种基于大整数分解困难性的非对称加密……
+#    --- [📚 discrete_math.pdf P.43] ---
+#    ...
+```
+
+**设计要点**：
+- **独立 Chroma collection** `kb_textbook`，与 Memory 的 `long_term` 完全隔离
+- **持久化路径** `data/kb/`，与 Memory 的 `data/memory/<session>` 互不污染
+- **Chunk 策略**：固定 800 字符 + 100 字符 overlap，中文友好且零依赖
+- **稳定 ID**：`source::pX::cN::hash[:8]`，二次 ingest 同一份教材会**覆盖**而非重复入库
+- **HashEmbedder 兜底**：没配 `OPENAI_API_KEY` 也能用，但结果末尾会**显著提示** `⚠️ 当前用 hash 兜底，召回率有限`，绝不假装效果
+- **支持扩展名**：`.pdf` / `.md` / `.markdown` / `.txt`
+
+**Agent 引用规范**（推荐写进 system prompt）：
+
+> 当你调用了 `kb_search` 并基于结果回答时，请在答案末尾附上「📚 参考：xxx P.42」便于学生回去翻书。
+
+---
+
 ## 🧪 运行测试
 
 ```bash
@@ -573,7 +652,7 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：125 passed + 6 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试）。
+**当前测试状态**：154 passed + 6 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试）。
 
 ---
 
@@ -596,7 +675,11 @@ course_agent/
 │   ├── python_exec.py    # ✅ Task 008 + 009：沙箱化 Python 执行（4 道安全闸 + extra_packages 白名单装包）
 │   ├── pdf_tools.py      # ✅ Task 008 + 009：pdf_read（pypdf 抽文本 + 扫描件 image_ocr 兜底）
 │   ├── image_ocr.py      # ✅ Task 009：多模态视觉 OCR（Qwen-VL / GPT-4V / Claude Vision）
-│   └── code_solve.py     # ✅ Task 009：自批改闭环（写→跑→改最多 N 轮，硬上限 5）
+│   ├── code_solve.py     # ✅ Task 009：自批改闭环（写→跑→改最多 N 轮，硬上限 5）
+│   ├── mistake_book.py   # ✅ Task 010：错题本工具（add_mistake / list_mistakes / review_mistake）
+│   └── kb.py             # ✅ Task 010：教材 RAG（kb_ingest / kb_search 复用 Chroma 独立 collection）
+├── storage/              # ✅ Task 010：本地持久化层
+│   └── mistake_db.py     # SQLite 错题库 + SM-2 间隔复习算法
 ├── ui/
 │   ├── chainlit_app.py   # Web UI 入口：场景按钮 + Settings 面板 + 多轮 + 记忆开关
 │   └── adapters.py       # AgentCallbacks → Chainlit Step 适配
@@ -614,7 +697,7 @@ course_agent/
 ├── logger.py             # loguru 包装
 └── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / **doctor**）
 
-tests/                    # 125 passed + 6 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools / **python_exec / pdf_tools / error_classification / doctor / image_ocr / code_solve / python_exec_packages / pdf_ocr_fallback**
+tests/                    # 154 passed + 6 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools / python_exec / pdf_tools / error_classification / doctor / image_ocr / code_solve / python_exec_packages / pdf_ocr_fallback / **mistake_db / mistake_book / kb / cli_mistakes**
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页
