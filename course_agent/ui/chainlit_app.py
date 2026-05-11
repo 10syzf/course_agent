@@ -8,6 +8,7 @@ from pathlib import Path
 import chainlit as cl
 from chainlit.input_widget import Slider, Switch, TextInput
 
+from course_agent.agent import ExaminerAgent
 from course_agent.config import get_config
 from course_agent.core import AgentLoop
 from course_agent.llm import create_llm
@@ -114,21 +115,29 @@ def _reset_history(system_prompt: str) -> list[dict]:
 
 
 def _scene_actions() -> list[cl.Action]:
-    """生成起始屏幕的 4 个场景快捷按钮."""
+    """生成起始屏幕的 5 个场景快捷按钮（含 Task 011 出题模式）."""
     labels = {
         "math": "📐 数学作业",
         "code": "💻 编程作业",
         "write": "📝 写作作业",
         "research": "🔍 资料检索",
+        "examiner": "📝 出题模式",
+    }
+    tooltips = {
+        "math": "切换到「数学作业」提示词模板",
+        "code": "切换到「编程作业」提示词模板",
+        "write": "切换到「写作作业」提示词模板",
+        "research": "切换到「资料检索」提示词模板",
+        "examiner": "进入 Examiner Agent：基于错题本和教材库出题陪练（Task 011）",
     }
     return [
         cl.Action(
             name="scene",
             payload={"scene": key},
             label=labels[key],
-            tooltip=f"切换到「{labels[key]}」提示词模板",
+            tooltip=tooltips[key],
         )
-        for key in ("math", "code", "write", "research")
+        for key in ("math", "code", "write", "research", "examiner")
     ]
 
 
@@ -226,6 +235,7 @@ async def on_chat_start() -> None:
 
     cl.user_session.set("cfg", cfg)
     cl.user_session.set("agent", agent)
+    cl.user_session.set("agent_mode", "react")
     cl.user_session.set("history", history)
     cl.user_session.set("scene", "default")
     cl.user_session.set("memory", memory)
@@ -270,14 +280,62 @@ async def on_chat_start() -> None:
 
 @cl.action_callback("scene")
 async def on_scene_action(action: cl.Action) -> None:
-    """点击场景快捷按钮：切换 System Prompt + 清空短期历史（保留长期记忆）."""
+    """点击场景快捷按钮：切换 System Prompt + 清空短期历史（保留长期记忆）.
+
+    Task 011 起，多了一个 ``examiner`` 场景：切换到 ExaminerAgent，走限定工具集 +
+    独立 system_prompt，并把 agent_mode 设为 "examiner"。
+    """
     scene = (action.payload or {}).get("scene", "default")
+    cfg = cl.user_session.get("cfg") or copy.deepcopy(get_config())
+
+    # ---- Task 011：出题模式 ----
+    if scene == "examiner":
+        try:
+            llm = create_llm(cfg.llm)
+            examiner = ExaminerAgent(llm=llm, max_steps=cfg.agent.max_steps)
+        except Exception as e:  # noqa: BLE001
+            await cl.Message(
+                content=f"❌ 切换出题模式失败：{e}", author="System"
+            ).send()
+            return
+
+        cl.user_session.set("agent", examiner)
+        cl.user_session.set("agent_mode", "examiner")
+        # Examiner 有自己的 system prompt，重置 history 用 examiner 的 prompt
+        from course_agent.agent.examiner import EXAMINER_SYSTEM_PROMPT
+
+        cl.user_session.set(
+            "history",
+            [LLMMessage(role="system", content=EXAMINER_SYSTEM_PROMPT).model_dump()],
+        )
+        cl.user_session.set("scene", "examiner")
+
+        # 重置短期记忆（保留长期）
+        memory: MemoryManager | None = cl.user_session.get("memory")
+        if memory is not None:
+            await memory.clear_short()
+            memory.short = ShortTermMemory(
+                llm=examiner.llm,
+                max_turns=memory.short.max_turns,
+                compress_trigger=memory.short.compress_trigger,
+            )
+            set_active_manager(memory)
+
+        await cl.Message(
+            content=(
+                "✅ 已切换到 **📝 出题模式（Examiner Agent）**\n\n"
+                f"我会从教材库 + 你的错题本里挑知识点出题陪你练。可用工具：`{', '.join(examiner.allowed_tools)}`\n\n"
+                "你可以直接说「出一道线代特征值的题」或「来个简单的二分查找题」。"
+            ),
+            author="Course Agent",
+        ).send()
+        return
+
     if scene not in _SCENE_PROMPTS:
         await cl.Message(content=f"⚠️ 未知场景：{scene}", author="System").send()
         return
 
     label, prompt = _SCENE_PROMPTS[scene]
-    cfg = cl.user_session.get("cfg") or copy.deepcopy(get_config())
 
     try:
         agent = _build_agent(cfg, system_prompt=prompt)
@@ -288,6 +346,7 @@ async def on_scene_action(action: cl.Action) -> None:
         return
 
     cl.user_session.set("agent", agent)
+    cl.user_session.set("agent_mode", "react")
     cl.user_session.set("history", _reset_history(prompt))
     cl.user_session.set("scene", scene)
 
@@ -453,24 +512,48 @@ async def on_message(message: cl.Message) -> None:
 
     callbacks = ChainlitCallbacks()
 
-    result = await agent.arun(
-        user_input=user_text,
-        history=enriched,
-        callbacks=callbacks,
-    )
+    # Task 011：流式渲染主消息；任意异常整体降级到非流式 arun
+    msg = cl.Message(content="", author="Course Agent")
+    await msg.send()
+
+    final_text = ""
+    streamed_ok = False
+    try:
+        async for chunk in agent.astream_run(
+            user_input=user_text,
+            history=enriched,
+            callbacks=callbacks,
+        ):
+            if chunk.delta_text:
+                await msg.stream_token(chunk.delta_text)
+                final_text += chunk.delta_text
+        await msg.update()
+        streamed_ok = True
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"流式渲染异常，整体降级到 arun：{type(e).__name__}: {e}")
+
+    if not streamed_ok or not final_text.strip():
+        # 兜底：非流式
+        result = await agent.arun(
+            user_input=user_text,
+            history=enriched,
+            callbacks=callbacks,
+        )
+        final_text = result.answer or final_text
+        await cl.Message(content=final_text, author="Course Agent").send()
 
     # 写入记忆（短期 + 可选长期）
     if memory is not None:
         try:
             await memory.add_user(user_text)
-            await memory.add_assistant(result.answer)
+            await memory.add_assistant(final_text)
         except Exception as e:  # noqa: BLE001
             _log.warning(f"写入记忆失败：{e}")
 
     # 更新 session 历史：追加本轮的 user + assistant
     history_raw.append(LLMMessage(role="user", content=user_text).model_dump())
     history_raw.append(
-        LLMMessage(role="assistant", content=result.answer).model_dump()
+        LLMMessage(role="assistant", content=final_text).model_dump()
     )
 
     # 截断保护：保留 system + 最近 10 轮（20 条消息）

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -61,6 +62,23 @@ class LLMResponse(BaseModel):
     raw: dict[str, Any] | None = None
 
 
+class StreamChunk(BaseModel):
+    """流式片段（Task 011）.
+
+    一次 ``astream()`` 迭代抛出一个 chunk，可能包含：
+      - delta_text：文本增量（直接外抛给 UI 打字机）
+      - tool_call_delta：tool_call 拼装中的增量（内部拼到完整再执行）
+      - finish_reason：'stop' / 'tool_calls' / 'length' / 'error' / None
+
+    设计原则：尽量贴 OpenAI streaming chunk 的 shape，便于 provider 直转。
+    """
+
+    delta_text: str = ""
+    tool_call_delta: dict[str, Any] | None = None
+    finish_reason: str | None = None
+    error: str | None = None
+
+
 LLMMessage.model_rebuild()
 
 
@@ -95,3 +113,48 @@ class BaseLLM(ABC):
         import asyncio
 
         return await asyncio.to_thread(self.chat, messages, tools, **kwargs)
+
+    async def astream(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamChunk]:
+        """流式 chat（Task 011）.
+
+        默认实现：先调一遍 ``achat()`` 把整段 content 拿到，再按字符切成假流式。
+        provider 应当覆盖为真正的 ``stream=True`` 调用以获得真正的打字机效果。
+
+        约定：
+        - 文本 chunk 通过 ``delta_text`` 外抛
+        - tool_call 整体作为 ``tool_call_delta`` 一次性给出（默认实现下没法逐 token）
+        - 最后一个 chunk 的 ``finish_reason`` 必须非 None
+        - 出错时 yield 一条 ``finish_reason='error'`` + ``error`` 字段
+        """
+        try:
+            resp = await self.achat(messages, tools=tools, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            yield StreamChunk(finish_reason="error", error=f"{type(e).__name__}: {e}")
+            return
+
+        text = resp.content or ""
+        # 按 4 字符一片做"假流式"，便于上层单测 + UI 体感
+        step = 4
+        for i in range(0, len(text), step):
+            yield StreamChunk(delta_text=text[i : i + step])
+
+        for tc in resp.tool_calls:
+            import json as _json
+
+            yield StreamChunk(
+                tool_call_delta={
+                    "index": 0,
+                    "id": tc.id,
+                    "function": {
+                        "name": tc.name,
+                        "arguments": _json.dumps(tc.arguments, ensure_ascii=False),
+                    },
+                },
+            )
+
+        yield StreamChunk(finish_reason=resp.finish_reason or "stop")

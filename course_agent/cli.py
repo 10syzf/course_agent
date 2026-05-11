@@ -457,9 +457,68 @@ def _check_vl_chat() -> tuple[str, str, str]:
         )
 
 
+def _check_streaming_and_examiner(cfg: Any) -> tuple[str, str, str]:
+    """第 10 项（Task 011）：探活 LLM 流式接口 + Examiner Agent 可实例化.
+
+    - LLM 流式：发一个最短消息，只读 1 个有效 chunk 即 break；
+      provider=mock 或未配置 key 时跳过为 ⚠️
+    - Examiner：只验证可实例化与限定工具集是否生效
+    """
+    import asyncio as _asyncio
+
+    if cfg.llm.provider == "mock" or not cfg.llm.api_key:
+        # 还是把 examiner 实例化部分跑一下（这部分不依赖网络）
+        try:
+            from course_agent.agent.examiner import ExaminerAgent
+            from course_agent.llm import create_llm
+
+            llm = create_llm(cfg.llm)
+            ex = ExaminerAgent(llm=llm)
+            return (
+                "⚠️",
+                "stream 跳过",
+                f"provider=mock 或未配 key；examiner 工具集 OK：{ex.allowed_tools}",
+            )
+        except Exception as e:  # noqa: BLE001
+            return ("❌", type(e).__name__, str(e)[:200])
+
+    try:
+        from course_agent.agent.examiner import ExaminerAgent
+        from course_agent.llm import create_llm
+        from course_agent.llm.base import LLMMessage
+
+        llm = create_llm(cfg.llm)
+
+        async def _probe() -> str | None:
+            n = 0
+            last_finish: str | None = None
+            async for chunk in llm.astream([LLMMessage(role="user", content="hi")]):
+                if chunk.finish_reason == "error":
+                    return f"err:{chunk.error or '?'}"
+                n += 1
+                if chunk.finish_reason:
+                    last_finish = chunk.finish_reason
+                if n >= 3:
+                    break
+            return last_finish or "streaming"
+
+        result = _asyncio.run(_probe())
+        if result and result.startswith("err:"):
+            return ("⚠️", "stream 不可用", result[:200])
+
+        ex = ExaminerAgent(llm=llm)
+        return (
+            "✅",
+            f"stream OK ({result})",
+            f"examiner.allowed_tools={ex.allowed_tools}",
+        )
+    except Exception as e:  # noqa: BLE001
+        return ("⚠️", type(e).__name__, str(e)[:200])
+
+
 @app.command()
 def doctor() -> None:
-    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools / 错题本+教材库 九项检查."""
+    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools / 错题本+教材库 / 流式+Examiner 十项检查."""
     setup_logger()
 
     console.print(Panel.fit("🩺 Course Agent 健康检查", style="bold cyan"))
@@ -476,6 +535,7 @@ def doctor() -> None:
         ("VL 多模态连通性", lambda: _check_vl_chat()),
         ("工具注册", lambda: _check_tools()),
         ("错题本 + 教材库", lambda: _check_mistake_kb()),
+        ("流式 + Examiner Agent", lambda: _check_streaming_and_examiner(cfg)),
     ]
 
     table = Table(show_lines=False, header_style="bold magenta")

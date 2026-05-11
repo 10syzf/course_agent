@@ -97,6 +97,7 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
 | **Task 008 · 让 Agent 真正动手做作业** | ✅ | **`python_exec` 沙箱（4 道安全闸）+ `pdf_read` PDF 阅读 + 错误分类细化（6 类）+ `course-agent doctor` 启动自检** |
 | **Task 009 · 让 Agent「看见」+「自己批改」** | ✅ | **`image_ocr` 多模态视觉（Qwen-VL/GPT-4V）+ `code_solve` 自批改闭环（写→跑→改最多 3 轮）+ `python_exec` 白名单装包（numpy/pandas/scipy/...）+ `pdf_read` 扫描件 OCR 兜底 + Chainlit 拖拽图片上传 + doctor 第 8 项 VL 连通性** |
 | **Task 010 · 让 Agent「记得住错」+「翻得到书」** | ✅ | **错题本（SQLite + SM-2 间隔复习）+ 教材 RAG（kb_ingest / kb_search 复用 Chroma 独立 collection）+ Chainlit 主动学习提示 + `/mistakes` 命令 + CLI `course-agent mistakes` 子命令 + doctor 第 9 项错题本+教材库** |
+| **Task 011 · 让 Agent「答得顺」+「考得出」** | ✅ | **真流式输出（`StreamChunk` + `BaseLLM.astream()` + `AgentLoop.astream_run()` + Chainlit 打字机）+ 题目生成器 `generate_question`（基于错题本+教材 RAG，结构化 JSON）+ Examiner Agent（限定工具集 + 极简自动 grader，多 Agent 编排第一块砖）+ doctor 第 10 项流式+Examiner 探活** |
 | Milestone 3 · 多 Agent 编排 | 🔜 | 规划者 / 执行者 / 批改者分工 |
 
 ---
@@ -210,10 +211,10 @@ uv run course-agent ui
 然后浏览器打开 **http://localhost:8000**。你会看到：
 
 - 🎨 类 ChatGPT 的现代聊天界面，支持 Markdown / LaTeX (`$...$`) / 代码高亮
-- ⚡ 流式输出（打字机效果）
+- ⚡ **真流式输出（Task 011）**：token 级打字机效果，OpenAI `stream=True` → `StreamChunk` → `cl.Message.stream_token`，失败自动降级到非流式 `arun()`
 - 🔧 **工具调用以可折叠 Step 卡片展示**——每一步 Agent 干了什么都清清楚楚
 - 💬 多轮对话（会话级保留最近 10 轮）
-- 🎯 **作业场景快捷按钮**：📐 数学 / 💻 编程 / 📝 写作 / 🔍 资料检索，一键切换专属 System Prompt
+- 🎯 **作业场景快捷按钮**：📐 数学 / 💻 编程 / 📝 写作 / 🔍 资料检索 / **📝 出题模式（Task 011）**，一键切换专属 System Prompt 或切换到 `ExaminerAgent`
 - ⚙️ **Settings 面板**（右上角齿轮）：实时调整 `model` / `temperature` / `max_steps`
 - 🌗 深色 / 浅色主题
 
@@ -451,7 +452,7 @@ Task 007 那次 `[LLM 认证失败]` 事故的产物——**不要等到第一�
 uv run course-agent doctor
 ```
 
-7 项检查（Task 009 起新增第 8 项「VL 多模态连通性」共 8 项）：
+7 项检查（Task 009 起新增第 8 项「VL 多模态连通性」；Task 010 第 9 项「错题本+教材库」；**Task 011 第 10 项「流式 + Examiner Agent」**，共 10 项）：
 
 | # | 项目 | 检查内容 |
 |---|---|---|
@@ -462,8 +463,9 @@ uv run course-agent doctor
 | 5 | LLM chat | 真实发一次 `ping`，记录 200/失败 + 时延 |
 | 6 | LLM embedding | 真实调一次 embed，记录 dim + 时延（失败 ⚠️ 自动降级 HashEmbedder，不算错） |
 | 7 | **VL 多模态连通性**（Task 009） | 配了 `VL_MODEL` 时用 1×1 PNG 真实探活；未配则 ⚠️ 跳过并提示「`image_ocr` 与 `pdf_read` 扫描兜底将自动降级」 |
-| 8 | 工具注册 | 16 个工具是否全部就位 |
+| 8 | 工具注册 | 17 个工具是否全部就位 |
 | 9 | 错题本 + 教材库 | SQLite mistakes.db 可读写 + Chroma kb_textbook chunk 数 |
+| 10 | **流式 + Examiner Agent**（Task 011） | `llm.astream()` 1 个 chunk 真实探活 + `ExaminerAgent` 限定工具集可实例化；mock/无 key 时跳过为 ⚠️ 但仍验证 Examiner |
 
 任何 `❌` 都会让 doctor 退出码非 0，方便 CI / 容器健康检查接入。
 
@@ -636,6 +638,92 @@ kb_search("RSA 加密原理", top_k=3)
 
 ---
 
+## ⌨️ 真流式输出（Task 011）
+
+学生最直观的「卡顿感」往往不是 LLM 慢，而是「等了 8 秒才一次性蹦出整段答案」。Task 011 把整条链路改成 **token 级真流式**：
+
+```
+OpenAI SDK stream=True
+        │
+        ▼
+BaseLLM.astream() ──→ AsyncIterator[StreamChunk]
+                       (delta_text / tool_call_delta / finish_reason / error)
+        │
+        ▼
+AgentLoop.astream_run() ──→ 逐 token 透出 + 跨 chunk 拼装 tool_call.arguments
+        │
+        ▼
+Chainlit on_message: cl.Message.stream_token(token) ──→ 浏览器打字机效果
+```
+
+**关键设计**：
+
+| 抽象 | 位置 | 干嘛 |
+|---|---|---|
+| `StreamChunk` | [llm/base.py](course_agent/llm/base.py) | 统一流式单元：`delta_text` / `tool_call_delta` / `finish_reason` / `error` |
+| `BaseLLM.astream()` | [llm/base.py](course_agent/llm/base.py) | 抽象方法；**默认实现**调 `achat()` 后切成 4 字符假流（兜底，让 MockLLM 不改也能流） |
+| `OpenAILLM.astream()` | [llm/openai_like.py](course_agent/llm/openai_like.py) | 真实 `stream=True`；逐 chunk yield；任何异常包成 `finish_reason="error"` |
+| `AgentLoop.astream_run()` | [core/agent_loop.py](course_agent/core/agent_loop.py) | 异步生成器；遇 `tool_calls` 时跨 chunk 拼 `arguments` JSON 增量；执行工具后再续流 |
+| Chainlit `on_message` | [ui/chainlit_app.py](course_agent/ui/chainlit_app.py) | `cl.Message.stream_token()`；流式失败 → 整体降级到 `arun()` 二次发送 |
+
+**容错链**：
+
+1. `OpenAILLM.astream()` 单 chunk 异常 → yield `StreamChunk(finish_reason="error", error=...)` 而不是抛
+2. `AgentLoop.astream_run()` 收到 `error` 后 → `await self.arun()` 一次性出最终答案
+3. Chainlit `on_message` 整段流式异常 → 再外一层 try → fallback 用 `arun()` 重新 send 一条新消息
+
+任意一层失败都能优雅降级，**不会出现"半截白屏"或抛 traceback 给用户**。
+
+**向后兼容**：`AgentLoop.run()` / `arun()` 完全不变，**默认 ReAct 仍按非流式跑**；流式只在 Chainlit `on_message` 中通过 `astream_run()` 显式开启。
+
+---
+
+## 📝 Examiner Agent 出题模式（Task 011）
+
+**多 Agent 编排的第一块砖**：用「**限定工具集 + 独立 system_prompt**」的薄壳把 `AgentLoop` 改造成专职「出题人 + 极简自动 grader」。
+
+### 怎么用
+
+Chainlit 启动后，点欢迎区的「**📝 出题模式**」按钮：
+
+```
+你 → 进入出题模式
+Examiner → 🔧 调用工具 generate_question(tag="线代,特征值")
+         → ### 📝 新题（解答题 · 难度 中）
+            求矩阵 A=[[2,1],[1,2]] 的特征值。
+            📚 参考：线代教材 P.83  ｜  基于错题：（无）
+
+你 → 我觉得 λ=2,4
+Examiner → ❌ 答错，正确答案是 λ1=3, λ2=1（解 det(A-λI)=0 即可）
+         → 🔧 调用工具 add_mistake(question="...", correct_answer="...", tags="线代,特征值", source="examiner_generated")
+         → ✅ 已记入错题本（#7）
+         → 要再来一道同类型的题吗？
+```
+
+### 三道关键栅栏
+
+| 栅栏 | 实现 | 防什么 |
+|---|---|---|
+| **限定工具集** | [`agent/examiner.py`](course_agent/agent/examiner.py) 的 `_EXAMINER_ALLOWED_TOOLS = ("generate_question", "kb_search", "add_mistake", "list_mistakes", "review_mistake")` | LLM 走神调 `python_exec` / `web_search` 等无关工具 → 直接从 `tool_names` 白名单里抹掉，schema 里都没有 |
+| **独立 system_prompt** | `EXAMINER_SYSTEM_PROMPT` 强制 0-5 评分规则 + `quality<3` 自动调 `add_mistake` | 没 prompt 引导，LLM 不会「答错→入错题本」这种闭环 |
+| **复用 AgentLoop** | `ExaminerAgent` 内部组合一个 `AgentLoop`，**不重复实现循环** | 双份维护、行为漂移 |
+
+### `generate_question` 工具
+
+[`tools/generator.py`](course_agent/tools/generator.py) 的 `generate_question(tag, question_type, difficulty, n_refs)`：
+
+1. `kb_search(tag)` 拿 `n_refs` 段教材作素材（HashEmbedder 兜底时显著标注 ⚠️）
+2. `_query_past_mistakes(tag)` 拿同 tag 下学生答错过的题目作为 `avoid_repeat` 黑名单
+3. 调 `get_default_llm().chat()` 出题，**强制 JSON 输出**（schema：`question / correct_answer / explanation / source / based_on_mistakes / type / difficulty`）
+4. JSON 解析失败 → **自动重试 1 次**（附带"上次输出无法解析"的强提示）；两次都失败 → 友好提示 + 截断 200 字原始响应（**不抛异常**）
+5. 返回 markdown：题面 + 教材出处 + 末尾的 ```` ```correct``` ```` 代码块（`correct_answer` 与 `explanation` 内嵌其中，仅供 Examiner 自批改读取，prompt 引导其不要直接展示给学生）
+
+### 故意不让 generate_question 写错题本
+
+工具单一职责：**写不写错题本由 Examiner 在判分后决定**，避免出题工具被普通 ReAct Agent 误用时把生成题也当作错题入库。
+
+---
+
 ## 🧪 运行测试
 
 ```bash
@@ -652,7 +740,7 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：154 passed + 6 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试）。
+**当前测试状态**：199 passed + 6 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试；Task 011 新增 45 项：12 流式 + 16 generate_question + 11 ExaminerAgent + 6 doctor 第 10 项）。
 
 ---
 
@@ -677,7 +765,8 @@ course_agent/
 │   ├── image_ocr.py      # ✅ Task 009：多模态视觉 OCR（Qwen-VL / GPT-4V / Claude Vision）
 │   ├── code_solve.py     # ✅ Task 009：自批改闭环（写→跑→改最多 N 轮，硬上限 5）
 │   ├── mistake_book.py   # ✅ Task 010：错题本工具（add_mistake / list_mistakes / review_mistake）
-│   └── kb.py             # ✅ Task 010：教材 RAG（kb_ingest / kb_search 复用 Chroma 独立 collection）
+│   ├── kb.py             # ✅ Task 010：教材 RAG（kb_ingest / kb_search 复用 Chroma 独立 collection）
+│   └── generator.py      # ✅ Task 011：题目生成器（generate_question，基于错题本+教材 RAG，结构化 JSON）
 ├── storage/              # ✅ Task 010：本地持久化层
 │   └── mistake_db.py     # SQLite 错题库 + SM-2 间隔复习算法
 ├── ui/
@@ -690,14 +779,16 @@ course_agent/
 │   ├── long_term.py      # Chroma PersistentClient（cosine HNSW）
 │   ├── manager.py        # MemoryManager（enrich_context 注入相关记忆）
 │   └── tools.py          # @tool recall / remember 工具
-├── agent/                # 🔜 Milestone 3：专用 Agent 角色
+├── agent/                # ✅ Task 011：专用 Agent 角色（多 Agent 编排第一块砖）
+│   ├── __init__.py       # 导出 ExaminerAgent / EXAMINER_SYSTEM_PROMPT
+│   └── examiner.py       # ExaminerAgent：限定工具集 + 独立 system_prompt 的 AgentLoop 包装
 ├── context/              # 🔜 Prompt 模板 / 上下文压缩
 ├── orchestrator/         # 🔜 Milestone 3：多 Agent 编排
 ├── config.py             # Pydantic 配置 + .env 加载
 ├── logger.py             # loguru 包装
 └── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / **doctor**）
 
-tests/                    # 154 passed + 6 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools / python_exec / pdf_tools / error_classification / doctor / image_ocr / code_solve / python_exec_packages / pdf_ocr_fallback / **mistake_db / mistake_book / kb / cli_mistakes**
+tests/                    # 199 passed + 6 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools / python_exec / pdf_tools / error_classification / doctor / image_ocr / code_solve / python_exec_packages / pdf_ocr_fallback / mistake_db / mistake_book / kb / cli_mistakes / **streaming / generator / examiner / cli_doctor_10**
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页
@@ -784,6 +875,10 @@ course-agent ui
 - [`task/task_005.md`](task/task_005.md) — Bug 报告归档
 - [`task/task_006.md`](task/task_006.md) — 文档重整需求（即本次）
 - [`task/task_007.md`](task/task_007.md) — 记忆系统 + 真实 Web 检索方案 ✅
+- [`task/task_008.md`](task/task_008.md) — 让 Agent 真正动手做作业（python_exec / pdf_read / doctor）✅
+- [`task/task_009.md`](task/task_009.md) — 让 Agent「看见」+「自己批改」（image_ocr / code_solve / extra_packages）✅
+- [`task/task_010.md`](task/task_010.md) — 让 Agent「记得住错」+「翻得到书」（错题本 + 教材 RAG）✅
+- [`task/task_011.md`](task/task_011.md) — 让 Agent「答得顺」+「考得出」（流式 + Examiner Agent + generate_question）✅
 
 ---
 

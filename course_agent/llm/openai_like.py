@@ -12,7 +12,7 @@ import json
 import time
 from typing import Any
 
-from course_agent.llm.base import BaseLLM, LLMMessage, LLMResponse, ToolCall
+from course_agent.llm.base import BaseLLM, LLMMessage, LLMResponse, StreamChunk, ToolCall
 from course_agent.logger import get_logger
 
 _log = get_logger("OpenAILLM")
@@ -321,3 +321,85 @@ class OpenAILLM(BaseLLM):
 
         _log.error(msg)
         return LLMResponse(content=msg, tool_calls=[], finish_reason="error")
+
+    async def astream(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ):
+        """真流式实装（Task 011）.
+
+        - 直接用 OpenAI SDK 的 ``stream=True``：返回的 chunk.choices[0].delta 已经是
+          OpenAI 标准的流式增量 shape；我们直接转 ``StreamChunk``，不做拼装（拼装由
+          上层 ``AgentLoop.astream_run()`` 负责）。
+        - 任何异常都包成单条 ``finish_reason='error'`` chunk，由 AgentLoop 决定降级。
+        - kwargs 与 ``achat()`` 完全对齐（temperature / max_tokens / tool_choice）。
+        """
+        try:
+            client = self._get_async_client()
+        except Exception as e:  # noqa: BLE001
+            yield StreamChunk(finish_reason="error", error=f"{type(e).__name__}: {e}")
+            return
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [m.to_openai() for m in messages],
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+        try:
+            stream = await client.chat.completions.create(**payload)
+        except Exception as e:  # noqa: BLE001
+            yield StreamChunk(finish_reason="error", error=f"{type(e).__name__}: {e}")
+            return
+
+        try:
+            async for chunk in stream:
+                try:
+                    choice = chunk.choices[0]
+                except (IndexError, AttributeError):
+                    continue
+                delta = getattr(choice, "delta", None)
+                finish_reason = getattr(choice, "finish_reason", None)
+
+                delta_text = ""
+                tc_delta: dict[str, Any] | None = None
+                if delta is not None:
+                    delta_text = getattr(delta, "content", None) or ""
+                    raw_tcs = getattr(delta, "tool_calls", None) or []
+                    for raw_tc in raw_tcs:
+                        # OpenAI 流式 tool_call 增量：index / id / function.name / function.arguments
+                        # 一次 chunk 一般只带其中部分字段，由上层按 index 拼起来。
+                        fn = getattr(raw_tc, "function", None)
+                        tc_delta = {
+                            "index": getattr(raw_tc, "index", 0) or 0,
+                            "id": getattr(raw_tc, "id", None),
+                            "function": {
+                                "name": getattr(fn, "name", None) if fn else None,
+                                "arguments": getattr(fn, "arguments", None) if fn else None,
+                            },
+                        }
+                        # 一个 chunk 里若同时多 tool_call，分多次 yield
+                        yield StreamChunk(
+                            delta_text=delta_text if delta_text else "",
+                            tool_call_delta=tc_delta,
+                            finish_reason=None,
+                        )
+                        delta_text = ""  # 文本只在第一个 tc_delta 上挂一次，避免重复
+
+                if delta_text or (tc_delta is None and finish_reason):
+                    yield StreamChunk(
+                        delta_text=delta_text,
+                        finish_reason=finish_reason,
+                    )
+                elif finish_reason:
+                    yield StreamChunk(finish_reason=finish_reason)
+        except Exception as e:  # noqa: BLE001
+            yield StreamChunk(finish_reason="error", error=f"{type(e).__name__}: {e}")
+            return
