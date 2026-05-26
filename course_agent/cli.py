@@ -182,6 +182,202 @@ def version() -> None:
 
 
 @app.command()
+def metrics(
+    limit: int = typer.Option(50, "--limit", help="查询最近 N 次 LLM 调用（上限 500）"),
+    show_raw: bool = typer.Option(
+        False, "--raw", help="同时显示原始 N 条记录（按时间倒序）"
+    ),
+) -> None:
+    """📊 可观测面板（Task 012/013）：展示 LLM + capability 调用统计."""
+    setup_logger()
+    from course_agent.observability.metrics import (
+        aggregate_by_agent,
+        aggregate_capabilities,
+        get_db_path,
+        load_recent,
+        load_recent_capabilities,
+    )
+
+    limit = max(1, min(int(limit), 500))
+    rows = aggregate_by_agent(limit)
+    cap_rows = aggregate_capabilities(limit)
+    if not rows and not cap_rows:
+        console.print(
+            Panel.fit(
+                f"📭 暂无 metrics 数据（db={get_db_path()}）。\n"
+                "跑几轮 Orchestrator / chat 后再来看。",
+                title="📊 Course Agent Metrics",
+            )
+        )
+    else:
+        if rows:
+            table = Table(
+                title=f"📊 最近 {limit} 次 LLM 调用按 Agent 聚合",
+                show_lines=False,
+            )
+            table.add_column("Agent", style="cyan", no_wrap=True)
+            table.add_column("调用数", style="magenta", justify="right")
+            table.add_column("Tokens (in/out)", style="yellow", justify="right")
+            table.add_column("平均时延", style="green", justify="right")
+            table.add_column("错误率", style="red", justify="right")
+            for r in rows:
+                table.add_row(
+                    r["agent_name"],
+                    str(r["calls"]),
+                    f"{r['prompt_tokens']}/{r['completion_tokens']}",
+                    f"{r['avg_latency_ms']}ms",
+                    f"{r['error_rate'] * 100:.1f}%",
+                )
+            console.print(table)
+
+        if cap_rows:
+            table2 = Table(
+                title=f"🔌 最近 {limit} 次 Capability 调用聚合",
+                show_lines=False,
+            )
+            table2.add_column("Name", style="cyan", no_wrap=True)
+            table2.add_column("Kind", style="yellow")
+            table2.add_column("Provider", style="blue")
+            table2.add_column("调用数", style="magenta", justify="right")
+            table2.add_column("平均时延", style="green", justify="right")
+            table2.add_column("错误率", style="red", justify="right")
+            for r in cap_rows:
+                table2.add_row(
+                    r["capability_name"],
+                    r["capability_kind"],
+                    r["provider_name"],
+                    str(r["calls"]),
+                    f"{r['avg_latency_ms']}ms",
+                    f"{r['error_rate'] * 100:.1f}%",
+                )
+            console.print(table2)
+
+    if show_raw:
+        raw = load_recent(limit)
+        t2 = Table(title=f"🧾 原始记录（最近 {len(raw)} 条）", show_lines=False)
+        t2.add_column("#", style="dim")
+        t2.add_column("Agent", style="cyan")
+        t2.add_column("Model", style="blue")
+        t2.add_column("in", justify="right")
+        t2.add_column("out", justify="right")
+        t2.add_column("latency", justify="right")
+        t2.add_column("status")
+        for i, r in enumerate(raw, 1):
+            t2.add_row(
+                str(i),
+                r["agent_name"],
+                r["model"],
+                str(r["prompt_tokens"]),
+                str(r["completion_tokens"]),
+                f"{r['latency_ms']}ms",
+                r["status"],
+            )
+        console.print(t2)
+        cap_raw = load_recent_capabilities(limit)
+        if cap_raw:
+            t3 = Table(title=f"🧩 Capability 原始记录（最近 {len(cap_raw)} 条）", show_lines=False)
+            t3.add_column("#", style="dim")
+            t3.add_column("Name", style="cyan")
+            t3.add_column("Kind", style="yellow")
+            t3.add_column("Provider", style="blue")
+            t3.add_column("latency", justify="right")
+            t3.add_column("status")
+            for i, r in enumerate(cap_raw, 1):
+                t3.add_row(
+                    str(i),
+                    r["capability_name"],
+                    r["capability_kind"],
+                    r["provider_name"],
+                    f"{r['latency_ms']}ms",
+                    r["status"],
+                )
+            console.print(t3)
+
+
+def _build_capability_registry(cfg: Any):
+    from course_agent.capabilities.adapters import build_default_capability_registry
+
+    return build_default_capability_registry(
+        tool_registry=get_registry(),
+        mcp_cfg=cfg.mcp,
+    )
+
+
+@app.command()
+def capabilities() -> None:
+    """列出统一能力层中的全部能力（internal_tool / skill / mcp）."""
+    setup_logger()
+    cfg = get_config()
+    reg = _build_capability_registry(cfg)
+    rows = reg.list_all()
+    table = Table(title="统一 Capability 列表", show_lines=False)
+    table.add_column("Name", style="cyan")
+    table.add_column("Kind", style="yellow")
+    table.add_column("Source", style="blue")
+    table.add_column("Enabled", style="green")
+    table.add_column("Description", style="white")
+    for r in rows:
+        table.add_row(
+            r.name,
+            r.kind.value,
+            r.source,
+            "yes" if r.enabled else "no",
+            r.description[:80],
+        )
+    console.print(table)
+
+
+skills_app = typer.Typer(help="Skill Runtime（Task 013）")
+app.add_typer(skills_app, name="skills")
+
+
+@skills_app.command("list")
+def skills_list() -> None:
+    """列出本地 Skill Runtime 中的所有 skill."""
+    setup_logger()
+    from course_agent.skills import get_skill_registry
+
+    reg = get_skill_registry()
+    table = Table(title="已注册 Skills", show_lines=False)
+    table.add_column("Name", style="cyan")
+    table.add_column("Description", style="white")
+    table.add_column("Parameters", style="yellow")
+    for sk in reg.all():
+        params = ", ".join(sk.parameters.get("properties", {}).keys())
+        table.add_row(sk.name, sk.description, params)
+    console.print(table)
+
+
+mcp_app = typer.Typer(help="MCP Adapter（Task 013）")
+app.add_typer(mcp_app, name="mcp")
+
+
+@mcp_app.command("list")
+def mcp_list() -> None:
+    """列出当前可见的 MCP 能力；未开启时友好提示."""
+    setup_logger()
+    cfg = get_config()
+    if not cfg.mcp.enabled:
+        console.print(
+            Panel.fit(
+                "MCP 当前未启用（`mcp.enabled=false`）。\n"
+                "开启后可通过 `course-agent mcp list` 查看 mock / 真实 server 的工具。",
+                title="🔌 MCP",
+            )
+        )
+        return
+    reg = _build_capability_registry(cfg)
+    rows = [r for r in reg.list_all() if r.kind.value == "mcp"]
+    table = Table(title="MCP 能力列表", show_lines=False)
+    table.add_column("Name", style="cyan")
+    table.add_column("Source", style="blue")
+    table.add_column("Description", style="white")
+    for r in rows:
+        table.add_row(r.name, r.source, r.description[:80])
+    console.print(table)
+
+
+@app.command()
 def ui(
     host: str = typer.Option("127.0.0.1", "--host", help="绑定的主机地址"),
     port: int = typer.Option(8000, "--port", "-p", help="Web UI 端口"),
@@ -516,9 +712,80 @@ def _check_streaming_and_examiner(cfg: Any) -> tuple[str, str, str]:
         return ("⚠️", type(e).__name__, str(e)[:200])
 
 
+def _check_multi_agent(cfg: Any) -> tuple[str, str, str]:
+    """第 11 项（Task 012）：探活 4 个 Agent 可实例化 + Orchestrator hello + metrics.db 可写.
+
+    - provider=mock / 未配 key：只做"实例化 + metrics.db 可读写"，不跑真实 LLM 环路
+    - 真实 LLM：跑一个 max_sub_tasks=1 / max_refine=0 的最小闭环（1 Plan + 1 Solve + 1 Critic）
+    """
+    try:
+        from course_agent.agent import (
+            CriticAgent,
+            Orchestrator,
+            PlannerAgent,
+            SolverAgent,
+        )
+        from course_agent.observability.metrics import ensure_schema
+
+        db_path = ensure_schema()
+        db_ok = db_path.exists()
+
+        if cfg.llm.provider == "mock" or not cfg.llm.api_key:
+            llm = create_llm(cfg.llm)
+            for agent_cls in (PlannerAgent, SolverAgent, CriticAgent):
+                agent_cls(llm=llm)
+            Orchestrator(llm=llm)
+            return (
+                "⚠️",
+                "orch 跳过 hello 探活",
+                f"4 agents OK；metrics.db={'存在' if db_ok else '缺失'} ({db_path})",
+            )
+
+        import asyncio as _asyncio
+
+        llm = create_llm(cfg.llm)
+        orch = Orchestrator(
+            llm=llm,
+            max_sub_tasks=1,
+            max_refine_per_task=0,
+            max_total_llm_calls=8,
+        )
+        result = _asyncio.run(orch.arun("请直接回复 hello，不用调任何工具。"))
+        return (
+            "✅",
+            f"hello roundtrip OK ({result.total_llm_calls} llm calls)",
+            f"4 agents ready；metrics.db OK ({db_path})",
+        )
+    except Exception as e:  # noqa: BLE001
+        return ("⚠️", type(e).__name__, str(e)[:200])
+
+
+def _check_capabilities_and_mcp(cfg: Any) -> tuple[str, str, str]:
+    """第 12 项（Task 013）：Skill runtime + capability registry + MCP mock 探活."""
+    try:
+        reg = _build_capability_registry(cfg)
+        all_caps = reg.list_all()
+        n_skill = len([c for c in all_caps if c.kind.value == "skill"])
+        n_tool = len([c for c in all_caps if c.kind.value == "internal_tool"])
+        n_mcp = len([c for c in all_caps if c.kind.value == "mcp"])
+        if not cfg.mcp.enabled:
+            return (
+                "⚠️",
+                f"tools={n_tool}, skills={n_skill}, mcp=skip",
+                "MCP 未启用；Skill runtime 与 capability registry 已就绪",
+            )
+        return (
+            "✅",
+            f"tools={n_tool}, skills={n_skill}, mcp={n_mcp}",
+            "Skill runtime OK；MCP mock/provider 可枚举",
+        )
+    except Exception as e:  # noqa: BLE001
+        return ("⚠️", type(e).__name__, str(e)[:200])
+
+
 @app.command()
 def doctor() -> None:
-    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools / 错题本+教材库 / 流式+Examiner 十项检查."""
+    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools / 错题本+教材库 / 流式+Examiner / 多 Agent / Skill+MCP 十二项检查."""
     setup_logger()
 
     console.print(Panel.fit("🩺 Course Agent 健康检查", style="bold cyan"))
@@ -536,6 +803,8 @@ def doctor() -> None:
         ("工具注册", lambda: _check_tools()),
         ("错题本 + 教材库", lambda: _check_mistake_kb()),
         ("流式 + Examiner Agent", lambda: _check_streaming_and_examiner(cfg)),
+        ("多 Agent + Orchestrator", lambda: _check_multi_agent(cfg)),
+        ("Skill + MCP 能力层", lambda: _check_capabilities_and_mcp(cfg)),
     ]
 
     table = Table(show_lines=False, header_style="bold magenta")

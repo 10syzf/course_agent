@@ -1,4 +1,4 @@
-"""Examiner Agent（Task 011）.
+"""Examiner Agent（Task 011 / Task 012）.
 
 多 Agent 编排的第一块砖：把 ReAct AgentLoop 套上「**限定工具集 + 独立 system_prompt**」
 的薄壳，扮演「出题人 + 极简 grader」的角色。
@@ -9,17 +9,25 @@
 - 不允许调：python_exec / web_search / file_write 等无关工具（限定工具集生效）
 - system_prompt 强引导 LLM「学生答错时自动调 add_mistake」——本期版本的极简 grader
 - 同时暴露 ``arun()`` 与 ``astream_run()``（与 AgentLoop 接口对齐）
+
+Task 012 升级：
+- 新增可选 ``critic`` 参数（``CriticAgent`` 实例）+ ``judge_answer()`` 方法
+  把 LLM 自评升级为独立 Critic 评审；保留 system_prompt 中的 0-5 评分规则
+  作为 LLM 自评的兜底（Critic 实例化失败时 examiner 仍能跑）
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from course_agent.core.agent_loop import AgentLoop, AgentResult
 from course_agent.core.state import AgentCallbacks
 from course_agent.llm.base import BaseLLM, LLMMessage, StreamChunk
 from course_agent.tools.registry import ToolRegistry, get_registry
+
+if TYPE_CHECKING:
+    from course_agent.agent.critic import CriticAgent
 
 EXAMINER_SYSTEM_PROMPT = """你是 Examiner—— Course Agent 阵营中的"严格但鼓励的助教"。
 你的人设与职责：
@@ -61,12 +69,15 @@ _EXAMINER_ALLOWED_TOOLS = (
 class ExaminerAgent:
     """出题人 Agent：限定工具集 + 独立 system_prompt 的 AgentLoop 包装."""
 
+    name = "Examiner"
+
     def __init__(
         self,
         llm: BaseLLM,
         registry: ToolRegistry | None = None,
         max_steps: int = 6,
         system_prompt: str | None = None,
+        critic: CriticAgent | None = None,
     ) -> None:
         reg = registry or get_registry()
         all_names = set(reg.list_names())
@@ -80,6 +91,45 @@ class ExaminerAgent:
             max_steps=max_steps,
             system_prompt=system_prompt or EXAMINER_SYSTEM_PROMPT,
         )
+        # Task 012：判分阶段可委托给独立 CriticAgent
+        self._critic = critic
+        self._llm = llm
+        self._registry = reg
+
+    @property
+    def critic(self) -> CriticAgent:
+        """懒初始化 Critic（避免 examiner 测试在 import 时拉链整个 critic 链）."""
+        if self._critic is None:
+            from course_agent.agent.critic import CriticAgent
+
+            self._critic = CriticAgent(llm=self._llm, registry=self._registry)
+        return self._critic
+
+    async def judge_answer(
+        self,
+        question: str,
+        correct_answer: str,
+        student_answer: str,
+    ) -> dict[str, Any]:
+        """Task 012：把"学生答案打分"委托给 CriticAgent.
+
+        返回 ``{score, pass, feedback}``——与 CriticAgent.critique 同 shape。
+        失败时（Critic 实例化失败 / 网络异常）保守返回 pass=True，让外层
+        Examiner 流程不被阻塞。
+        """
+        sub_task = {
+            "id": 0,
+            "title": question[:80],
+            "expected_output": correct_answer,
+        }
+        try:
+            return await self.critic.critique(sub_task, student_answer)
+        except Exception as e:  # noqa: BLE001
+            return {
+                "score": 3,
+                "pass": True,
+                "feedback": f"⚠️ Critic 不可用（{type(e).__name__}）；默认通过",
+            }
 
     @property
     def llm(self) -> BaseLLM:

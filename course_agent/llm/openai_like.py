@@ -14,8 +14,21 @@ from typing import Any
 
 from course_agent.llm.base import BaseLLM, LLMMessage, LLMResponse, StreamChunk, ToolCall
 from course_agent.logger import get_logger
+from course_agent.observability.metrics import track_llm_call
 
 _log = get_logger("OpenAILLM")
+
+
+def _fill_usage(rec: Any, resp: Any) -> None:
+    """从 OpenAI ChatCompletion 响应里把 usage 信息填到 metrics record."""
+    try:
+        usage = getattr(resp, "usage", None)
+        if usage is None:
+            return
+        rec.prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        rec.completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class OpenAILLM(BaseLLM):
@@ -104,7 +117,9 @@ class OpenAILLM(BaseLLM):
             payload["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
-            resp = self._with_retry(lambda: client.chat.completions.create(**payload))
+            with track_llm_call(model=self.model) as rec:
+                resp = self._with_retry(lambda: client.chat.completions.create(**payload))
+                _fill_usage(rec, resp)
         except Exception as e:
             return self._handle_error(e)
 
@@ -130,7 +145,9 @@ class OpenAILLM(BaseLLM):
             payload["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
-            resp = await self._awith_retry(client, payload)
+            with track_llm_call(model=self.model) as rec:
+                resp = await self._awith_retry(client, payload)
+                _fill_usage(rec, resp)
         except Exception as e:
             return self._handle_error(e)
 
@@ -359,6 +376,17 @@ class OpenAILLM(BaseLLM):
             yield StreamChunk(finish_reason="error", error=f"{type(e).__name__}: {e}")
             return
 
+        # metrics: 流式无法精确拿到 usage（多数 provider 不发），按 chunk 数估算
+        from course_agent.observability.metrics import MetricRecord, _insert
+
+        _t0 = time.perf_counter()
+        _rec = MetricRecord(
+            model=self.model,
+            agent_name="",  # 留空让 _insert 时用 contextvar 当前值——手动填一次
+        )
+        from course_agent.observability.metrics import get_current_agent
+        _rec.agent_name = get_current_agent()
+        completion_chars = 0
         try:
             async for chunk in stream:
                 try:
@@ -372,6 +400,7 @@ class OpenAILLM(BaseLLM):
                 tc_delta: dict[str, Any] | None = None
                 if delta is not None:
                     delta_text = getattr(delta, "content", None) or ""
+                    completion_chars += len(delta_text)
                     raw_tcs = getattr(delta, "tool_calls", None) or []
                     for raw_tc in raw_tcs:
                         # OpenAI 流式 tool_call 增量：index / id / function.name / function.arguments
@@ -401,5 +430,12 @@ class OpenAILLM(BaseLLM):
                 elif finish_reason:
                     yield StreamChunk(finish_reason=finish_reason)
         except Exception as e:  # noqa: BLE001
+            _rec.status = "error"
+            _rec.error = f"{type(e).__name__}: {e}"
+            _rec.latency_ms = int((time.perf_counter() - _t0) * 1000)
+            _insert(_rec)
             yield StreamChunk(finish_reason="error", error=f"{type(e).__name__}: {e}")
             return
+        _rec.completion_tokens = max(0, completion_chars // 4)  # 粗估：4 chars ≈ 1 token
+        _rec.latency_ms = int((time.perf_counter() - _t0) * 1000)
+        _insert(_rec)

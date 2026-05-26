@@ -9,6 +9,8 @@ import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from course_agent.mcp.config import MCPConfig
+
 
 class LLMConfig(BaseModel):
     provider: str = "mock"
@@ -40,6 +42,7 @@ class AppConfig(BaseSettings):
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
 
@@ -94,9 +97,19 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
     if os.getenv("AGENT_LOG_LEVEL"):
         logging_data["level"] = os.getenv("AGENT_LOG_LEVEL")
 
+    mcp_data = data.get("mcp", {})
+    if os.getenv("MCP_ENABLED"):
+        mcp_data["enabled"] = os.getenv("MCP_ENABLED", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
     return AppConfig(
         llm=LLMConfig(**llm_data),
         agent=AgentConfig(**agent_data),
+        mcp=MCPConfig(**mcp_data),
         logging=LoggingConfig(**logging_data),
     )
 

@@ -27,6 +27,7 @@ class AgentState(BaseModel):
     step: int = 0
     done: bool = False
     final_answer: str | None = None
+    scratch: dict[str, Any] = Field(default_factory=dict)
 
     def add_message(self, message: LLMMessage) -> None:
         self.messages.append(message)

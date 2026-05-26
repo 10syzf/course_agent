@@ -8,7 +8,8 @@ from pathlib import Path
 import chainlit as cl
 from chainlit.input_widget import Slider, Switch, TextInput
 
-from course_agent.agent import ExaminerAgent
+from course_agent.agent import ExaminerAgent, Orchestrator
+from course_agent.capabilities.adapters import build_default_capability_registry
 from course_agent.config import get_config
 from course_agent.core import AgentLoop
 from course_agent.llm import create_llm
@@ -26,6 +27,41 @@ from course_agent.ui.adapters import ChainlitCallbacks
 
 setup_logger()
 _log = get_logger("ChainlitApp")
+
+
+# ---------------------------------------------------------------------------
+# Task 012：Chainlit data layer 持久化（消息 / Steps / Threads 落地到 SQLite）
+# ---------------------------------------------------------------------------
+_DATA_DIR = Path("data")
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_CHAINLIT_DB_PATH = (_DATA_DIR / "chainlit.db").resolve()
+
+
+def _try_register_data_layer() -> None:
+    """注册 Chainlit data layer（失败时静默——不阻断 UI 启动）.
+
+    注意：``cl_data.data_layer`` 是 chainlit 提供的装饰器，必须在 ``on_chat_start``
+    之前调用，所以放到模块顶层。失败时只 log warning，让 UI 仍能跑（无持久化）。
+    """
+    try:
+        import chainlit.data as cl_data
+        from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+
+        @cl_data.data_layer
+        def _get_data_layer() -> SQLAlchemyDataLayer:  # noqa: D401
+            return SQLAlchemyDataLayer(
+                conninfo=f"sqlite+aiosqlite:///{_CHAINLIT_DB_PATH}",
+            )
+
+        _log.info(f"Chainlit data layer 已启用：{_CHAINLIT_DB_PATH}")
+    except Exception as e:  # noqa: BLE001
+        _log.warning(
+            f"Chainlit data layer 启用失败（{type(e).__name__}: {e}），"
+            "UI 仍可用但消息不会持久化"
+        )
+
+
+_try_register_data_layer()
 
 
 _WELCOME = (
@@ -115,13 +151,14 @@ def _reset_history(system_prompt: str) -> list[dict]:
 
 
 def _scene_actions() -> list[cl.Action]:
-    """生成起始屏幕的 5 个场景快捷按钮（含 Task 011 出题模式）."""
+    """生成起始屏幕的场景快捷按钮（Task 011 加 examiner，Task 012 加 orchestrator）."""
     labels = {
         "math": "📐 数学作业",
         "code": "💻 编程作业",
         "write": "📝 写作作业",
         "research": "🔍 资料检索",
         "examiner": "📝 出题模式",
+        "orchestrator": "🧩 复杂任务模式",
     }
     tooltips = {
         "math": "切换到「数学作业」提示词模板",
@@ -129,6 +166,7 @@ def _scene_actions() -> list[cl.Action]:
         "write": "切换到「写作作业」提示词模板",
         "research": "切换到「资料检索」提示词模板",
         "examiner": "进入 Examiner Agent：基于错题本和教材库出题陪练（Task 011）",
+        "orchestrator": "进入多 Agent 编排：Plan→Solve→Critique→Refine 闭环（Task 012）",
     }
     return [
         cl.Action(
@@ -137,7 +175,7 @@ def _scene_actions() -> list[cl.Action]:
             label=labels[key],
             tooltip=tooltips[key],
         )
-        for key in ("math", "code", "write", "research", "examiner")
+        for key in ("math", "code", "write", "research", "examiner", "orchestrator")
     ]
 
 
@@ -331,6 +369,50 @@ async def on_scene_action(action: cl.Action) -> None:
         ).send()
         return
 
+    # ---- Task 012：多 Agent 编排模式 ----
+    if scene == "orchestrator":
+        try:
+            llm = create_llm(cfg.llm)
+            orchestrator = Orchestrator(
+                llm=llm,
+                solver_max_steps=cfg.agent.max_steps,
+                mcp_cfg=cfg.mcp,
+                enable_capabilities=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            await cl.Message(
+                content=f"❌ 切换复杂任务模式失败：{e}", author="System"
+            ).send()
+            return
+
+        cl.user_session.set("agent", orchestrator)
+        cl.user_session.set("orchestrator_llm", llm)
+        cl.user_session.set("agent_mode", "orchestrator")
+        cl.user_session.set("history", [])
+        cl.user_session.set("scene", "orchestrator")
+
+        # 重置短期记忆（保留长期）
+        memory: MemoryManager | None = cl.user_session.get("memory")
+        if memory is not None:
+            await memory.clear_short()
+            memory.short = ShortTermMemory(
+                llm=llm,
+                max_turns=memory.short.max_turns,
+                compress_trigger=memory.short.compress_trigger,
+            )
+            set_active_manager(memory)
+
+        await cl.Message(
+            content=(
+                "✅ 已切换到 **🧩 复杂任务模式（Orchestrator）**\n\n"
+                "我会按 **Plan → Solve → Critique → Refine** 的闭环处理你的任务，"
+                "适合多步骤、多工具协作的复杂作业。\n\n"
+                "你可以直接描述任务，例如「帮我写一份关于快速排序的报告，包含原理、代码和复杂度分析」。"
+            ),
+            author="Course Agent",
+        ).send()
+        return
+
     if scene not in _SCENE_PROMPTS:
         await cl.Message(content=f"⚠️ 未知场景：{scene}", author="System").send()
         return
@@ -510,7 +592,79 @@ async def on_message(message: cl.Message) -> None:
     else:
         enriched = base_history
 
-    callbacks = ChainlitCallbacks()
+    cap_specs = []
+    try:
+        cap_specs = build_default_capability_registry(
+            tool_registry=get_registry(),
+            mcp_cfg=(cl.user_session.get("cfg") or get_config()).mcp,
+        ).list_all()
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"构建 capability 列表失败，回退到普通 Tool Step：{e}")
+    callbacks = ChainlitCallbacks(capability_specs=cap_specs)
+
+    # Task 012：复杂任务模式（Orchestrator）—— Plan→Solve→Critique→Refine
+    if cl.user_session.get("agent_mode") == "orchestrator" and isinstance(
+        agent, Orchestrator
+    ):
+        try:
+            result = await agent.arun(user_text, callbacks=callbacks)
+        except Exception as e:  # noqa: BLE001
+            _log.warning(f"Orchestrator 运行失败：{type(e).__name__}: {e}")
+            await cl.Message(
+                content=f"❌ Orchestrator 失败：{type(e).__name__}: {e}",
+                author="System",
+            ).send()
+            return
+
+        # 主答案
+        await cl.Message(
+            content=result.final_answer, author="Orchestrator"
+        ).send()
+
+        # Step 卡片：Plan + 每个 sub-task
+        try:
+            async with cl.Step(name="Plan", type="tool") as plan_step:
+                plan_step.input = user_text
+                plan_step.output = "\n".join(
+                    f"- #{p.get('id', i + 1)} {p.get('title', '')}"
+                    for i, p in enumerate(result.plan)
+                )
+            for sr in result.sub_results:
+                sid = sr.sub_task.get("id", "?")
+                title = sr.sub_task.get("title", "")
+                score = sr.critic.get("score", "?")
+                passed = sr.critic.get("pass", False)
+                async with cl.Step(
+                    name=f"Sub-Task #{sid}", type="tool"
+                ) as ss:
+                    ss.input = title
+                    ok = "✅" if passed else "❌"
+                    ss.output = (
+                        f"{ok} score={score}/5 "
+                        f"｜ refine={sr.refine_rounds} 轮\n\n"
+                        f"{(sr.solver_output or '')[:600]}"
+                    )
+        except Exception as e:  # noqa: BLE001
+            _log.warning(f"Orchestrator Step 渲染异常：{e}")
+
+        # 写入记忆 + 历史
+        final_text = result.final_answer or ""
+        if memory is not None:
+            try:
+                await memory.add_user(user_text)
+                await memory.add_assistant(final_text)
+            except Exception as e:  # noqa: BLE001
+                _log.warning(f"写入记忆失败：{e}")
+        history_raw.append(
+            LLMMessage(role="user", content=user_text).model_dump()
+        )
+        history_raw.append(
+            LLMMessage(role="assistant", content=final_text).model_dump()
+        )
+        if len(history_raw) > 21:
+            history_raw = [history_raw[0]] + history_raw[-20:]
+        cl.user_session.set("history", history_raw)
+        return
 
     # Task 011：流式渲染主消息；任意异常整体降级到非流式 arun
     msg = cl.Message(content="", author="Course Agent")

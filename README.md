@@ -98,7 +98,9 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
 | **Task 009 · 让 Agent「看见」+「自己批改」** | ✅ | **`image_ocr` 多模态视觉（Qwen-VL/GPT-4V）+ `code_solve` 自批改闭环（写→跑→改最多 3 轮）+ `python_exec` 白名单装包（numpy/pandas/scipy/...）+ `pdf_read` 扫描件 OCR 兜底 + Chainlit 拖拽图片上传 + doctor 第 8 项 VL 连通性** |
 | **Task 010 · 让 Agent「记得住错」+「翻得到书」** | ✅ | **错题本（SQLite + SM-2 间隔复习）+ 教材 RAG（kb_ingest / kb_search 复用 Chroma 独立 collection）+ Chainlit 主动学习提示 + `/mistakes` 命令 + CLI `course-agent mistakes` 子命令 + doctor 第 9 项错题本+教材库** |
 | **Task 011 · 让 Agent「答得顺」+「考得出」** | ✅ | **真流式输出（`StreamChunk` + `BaseLLM.astream()` + `AgentLoop.astream_run()` + Chainlit 打字机）+ 题目生成器 `generate_question`（基于错题本+教材 RAG，结构化 JSON）+ Examiner Agent（限定工具集 + 极简自动 grader，多 Agent 编排第一块砖）+ doctor 第 10 项流式+Examiner 探活** |
-| Milestone 3 · 多 Agent 编排 | 🔜 | 规划者 / 执行者 / 批改者分工 |
+| **Task 012 · 让 Agent「分工合作」+「看得见账」** | ✅ | **多 Agent 编排（Planner / Solver / Critic / Orchestrator 四角分工，Plan→Solve→Critique→Refine 闭环，硬上限 30 LLM 调用）+ 可观测面板（SQLite metrics + `track_llm_call` + `course-agent metrics` 表格）+ Chainlit 数据层持久化（SQLAlchemy + aiosqlite，关闭浏览器历史不丢）+ Examiner 判分委托给 CriticAgent + doctor 第 11 项多 Agent 探活** |
+| **Task 013 · 让 Agent「会借外脑」** | ✅ | **统一 Capability Layer（`internal_tool / skill / mcp`）+ Local Skill Runtime（`study_plan_skill` / `quiz_from_notes_skill`）+ MCP Adapter（mock-first，可选开启）+ Capability Router + capability metrics + CLI `capabilities/skills list/mcp list` + doctor 第 12 项 Skill/MCP 探活 + Chainlit Step 显示 `Tool / Skill / MCP` 来源** |
+| Milestone 3 · 多 Agent 编排 | ✅ | Planner / Solver / Critic / Orchestrator 四角分工 + Refine 闭环（Task 012）|
 
 ---
 
@@ -452,7 +454,7 @@ Task 007 那次 `[LLM 认证失败]` 事故的产物——**不要等到第一�
 uv run course-agent doctor
 ```
 
-7 项检查（Task 009 起新增第 8 项「VL 多模态连通性」；Task 010 第 9 项「错题本+教材库」；**Task 011 第 10 项「流式 + Examiner Agent」**，共 10 项）：
+7 项检查（Task 009 起新增第 8 项「VL 多模态连通性」；Task 010 第 9 项「错题本+教材库」；**Task 011 第 10 项「流式 + Examiner Agent」**；**Task 012 第 11 项「多 Agent + Orchestrator」**；**Task 013 第 12 项「Skill + MCP 能力层」**，共 12 项）：
 
 | # | 项目 | 检查内容 |
 |---|---|---|
@@ -466,6 +468,8 @@ uv run course-agent doctor
 | 8 | 工具注册 | 17 个工具是否全部就位 |
 | 9 | 错题本 + 教材库 | SQLite mistakes.db 可读写 + Chroma kb_textbook chunk 数 |
 | 10 | **流式 + Examiner Agent**（Task 011） | `llm.astream()` 1 个 chunk 真实探活 + `ExaminerAgent` 限定工具集可实例化；mock/无 key 时跳过为 ⚠️ 但仍验证 Examiner |
+| 11 | **多 Agent + Orchestrator**（Task 012） | 4 个 Agent（Planner / Solver / Critic / Orchestrator）可实例化 + metrics.db 就绪；真 LLM 跑一个 `max_sub_tasks=1 / max_refine=0` 的最小 hello roundtrip；mock / 无 key 时跳过为 ⚠️ 但仍验证实例化 |
+| 12 | **Skill + MCP 能力层**（Task 013） | Capability Registry 可实例化；至少能发现内部工具 + Local Skill；MCP 未开启时 ⚠️ skip，不算失败；开启 mock provider 后可枚举 MCP 能力 |
 
 任何 `❌` 都会让 doctor 退出码非 0，方便 CI / 容器健康检查接入。
 
@@ -740,7 +744,272 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：199 passed + 6 skipped（live tests 默认跳过；含 `RUN_LIVE_WEB=1` 触发的真实 DuckDuckGo / web_fetch 联网测试；Task 011 新增 45 项：12 流式 + 16 generate_question + 11 ExaminerAgent + 6 doctor 第 10 项）。
+**当前测试状态**：**307 passed + 6 skipped**（live tests 默认跳过；Task 013 在 Task 012 的基础上再新增 54 项：6 capability_base + 6 capability_registry + 8 skill_runtime + 6 skill_builtin + 8 mcp_adapter + 6 capability_router + 5 cli_capabilities + 4 cli_doctor_12 + 5 orchestrator_capabilities）。
+
+---
+
+## 🧩 多 Agent 编排（Plan / Solve / Critic / Orchestrator）（Task 012）
+
+Task 011 的 `ExaminerAgent` 是**单 Agent 跑全场**——只是 prompt 和工具集变窄。Task 012 解决的是**真正的「分工合作」问题**：「帮我把这份作业全做完」不是一个 Agent 该一个人扛的活。
+
+### 四角分工
+
+| Agent | 工具白名单 | system_prompt 关键词 | 输出格式 |
+|---|---|---|---|
+| **Planner** | `kb_search` / `list_mistakes` | "拆 1～5 个有序、可独立执行的 sub-task" | JSON `{plan_summary, sub_tasks: [{id, title, expected_output, suggested_tools}]}` |
+| **Solver** | **全工具集**（动手干活） | "直接给出满足 expected_output 的最终结果" | 自由 markdown |
+| **Critic** | `kb_search`（仅核对教材） | "score 0-5，pass=score>=3" | JSON `{score, pass, feedback}` |
+| **Orchestrator** | 无（自己不调 LLM） | — | `OrchestratorResult{final_answer, plan, sub_results, total_llm_calls}` |
+
+### Plan → Solve → Critique → Refine 闭环
+
+```
+用户原始任务
+    │
+    ▼  （1 次 LLM）
+Planner → JSON sub_tasks  ← JSON 解析失败重试 1 次；仍失败 → 单 sub_task 降级
+    │
+    ▼
+for each sub_task:
+    Solver.solve(sub_task) → answer        ── 1 次 LLM
+        │
+        ▼
+    Critic.critique(sub_task, answer)      ── 1 次 LLM
+        │
+        ├── pass=True  → 进入下一个 sub_task
+        └── pass=False → 把 Critic feedback 注入 history → 回 Solver 重跑
+                          （最多 max_refine_per_task=2 轮）
+    │
+    ▼
+合成 final_answer（多 sub_task 时按 "## 最终答案 / ### Sub-Task #n" 分段拼接）
+```
+
+### 三道硬上限（防 token 失控）
+
+| 参数 | 默认 | 触发后行为 |
+|---|---|---|
+| `max_sub_tasks` | 5 | Planner 输出超过则截断 |
+| `max_refine_per_task` | 2 | 每个 sub_task 最多 refine 2 轮（Solver 重跑 2 次）|
+| `max_total_llm_calls` | 30 | **抛 RuntimeError**（防死循环）|
+
+### 四道降级保护
+
+1. **Planner JSON 解析失败**：重试 1 次 → 仍失败 → 单 sub_task 模式（把原任务整段丢给 Solver），无 traceback 暴露
+2. **Critic JSON 解析失败**：重试 1 次 → 仍失败 → 保守通过（`{score: 3, pass: True, feedback: "⚠️ Critic JSON 解析失败，默认通过"}`），不阻塞主流程
+3. **达 LLM 调用上限**：保留当前 sub_task 结果，跳过后续 Critic
+4. **Refine 上限**：保留最后一次 Solver 输出（即使 critic 仍 fail），继续下一个 sub_task
+
+### Chainlit 复杂任务模式
+
+点欢迎区的「**🧩 复杂任务模式**」按钮 → 输入复杂任务 → UI 按 Agent 分层展示：
+
+```
+🧩 复杂任务模式：读完 ~/Desktop/hw.pdf 第 1-3 页提取题目 + 出 1 道相似新题
+[Step] Plan        → 1) 抽取 hw.pdf 题目  2) 出 1 道相似新题
+[Step] Sub-Task #1 → ✅ score=4/5 ｜ refine=0 轮 ｜ <Solver 输出截断 600 字>
+[Step] Sub-Task #2 → ✅ score=5/5 ｜ refine=1 轮 ｜ <Solver 输出截断 600 字>
+（主消息）## 最终答案 / ### Sub-Task #1：... / ### Sub-Task #2：...
+```
+
+### 代码结构
+
+| 模块 | 职责 |
+|---|---|
+| [agent/base.py](course_agent/agent/base.py) | `BaseAgent` Protocol（`runtime_checkable`，鸭子类型契约）+ `AgentMessage` Pydantic 模型 |
+| [agent/planner.py](course_agent/agent/planner.py) | `PlannerAgent.plan()` → list[sub_task]；JSON 解析 + 重试 + 单段降级 |
+| [agent/solver.py](course_agent/agent/solver.py) | `SolverAgent.solve(sub_task, history)` → AgentResult；薄壳 ReAct |
+| [agent/critic.py](course_agent/agent/critic.py) | `CriticAgent.critique(sub_task, answer)` → `{score, pass, feedback}` |
+| [agent/orchestrator.py](course_agent/agent/orchestrator.py) | `Orchestrator.arun(user_task)` → `OrchestratorResult` |
+
+### Examiner 判分委托
+
+ExaminerAgent 新增可选 `critic` 构造参数 + `judge_answer()` 方法 —— 学生交卷时不再依赖 system_prompt 的「自我打分」，而是委托给独立 CriticAgent（避免单 Agent 自评偏差）。Critic 实例化失败时仍自动降级回原本的 system_prompt 自评，向后兼容。
+
+---
+
+## 📊 可观测面板（`course-agent metrics`）
+
+多 Agent 编排会引入「token 都花到哪个角色了？哪个 Agent 出错率高？」的运维问题。Task 012 加了一个**轻量的 SQLite metrics 落库 + CLI 表格展示**。
+
+### 数据表
+
+`~/.cache/course-agent/metrics.db`（可用 `COURSE_AGENT_METRICS_DB` 环境变量覆写）：
+
+```sql
+CREATE TABLE metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    agent_name TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    latency_ms INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'ok',
+    error TEXT
+);
+```
+
+### 自动落库的入口
+
+`course_agent/llm/openai_like.py` 的 `chat()` / `achat()` / `astream()` 全部包了 `track_llm_call()` 上下文管理器，**自动**记录每次 LLM 调用：
+
+```python
+with track_llm_call(model=self.model) as rec:
+    resp = client.chat.completions.create(...)
+    rec.prompt_tokens = resp.usage.prompt_tokens
+    rec.completion_tokens = resp.usage.completion_tokens
+```
+
+`agent_name` 通过 **contextvar** 传递（`set_current_agent("Planner")` 在每个 Agent 入口调用），异步安全跟着 task 走，不会窜场。
+
+### 失败不阻塞
+
+metrics 写入异常**只 log warning，不抛出**——可观测性是辅助，不能影响主流程。
+
+### CLI 用法
+
+```bash
+# 看最近 50 次按 Agent 聚合的统计
+uv run course-agent metrics
+
+# 看最近 200 条 + 原始记录
+uv run course-agent metrics --limit 200 --raw
+```
+
+输出示例：
+
+```
+📊 最近 50 次 LLM 调用按 Agent 聚合
+┏━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━┓
+┃ Agent        ┃ 调用数 ┃ Tokens (in/out) ┃ 平均时延 ┃ 错误率 ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━┩
+│ Solver       │     12 │       8420/3120 │   1830ms │   0.0% │
+│ Critic       │      9 │        3240/280 │    980ms │   0.0% │
+│ Planner      │      3 │         860/210 │   1120ms │   0.0% │
+└──────────────┴────────┴─────────────────┴──────────┴────────┘
+```
+
+---
+
+## 💾 会话持久化（Chainlit data layer）（Task 012）
+
+Chainlit 默认每次刷新页面就忘光历史。Task 012 接入了 **Chainlit 官方 SQLAlchemy data layer**，把 message / step / thread 全部落到本地 SQLite：
+
+```python
+# course_agent/ui/chainlit_app.py（模块顶层）
+import chainlit.data as cl_data
+from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+
+@cl_data.data_layer
+def _get_data_layer():
+    return SQLAlchemyDataLayer(
+        conninfo=f"sqlite+aiosqlite:///{Path('data/chainlit.db').resolve()}"
+    )
+```
+
+**注意**：`cl_data.data_layer` 装饰器**必须在模块顶层执行**（不能放到 `on_chat_start` 里），否则 Chainlit 启动时拉不到。失败时静默 log warning，UI 仍能跑，只是无持久化。
+
+依赖：`sqlalchemy>=2.0` + `aiosqlite>=0.19`（已写入 [pyproject.toml](pyproject.toml)）。
+
+---
+
+## 🧰 统一 Capability Layer（Task 013）
+
+Task 012 的 Agent 已经会「分工合作」，但能力来源仍然被仓库里的 `tools/` 锁死。Task 013 把“能力”进一步抽象成统一对象，让上层不再区分“这是内置工具、Skill，还是外部 MCP server 提供的能力”。
+
+### 三类能力
+
+| Kind | 含义 | 典型来源 |
+|---|---|---|
+| `internal_tool` | 现有 `ToolRegistry` 里的底层工具 | `calculator` / `pdf_read` / `kb_search` |
+| `skill` | 本地高层能力封装，通常是“任务模板 + 参数 schema + 执行器” | `study_plan_skill` / `quiz_from_notes_skill` |
+| `mcp` | 外部 MCP server 暴露的能力 | `mcp_demo_echo` / `mcp_demo_keyword_extract` |
+
+### 统一抽象
+
+- [capabilities/base.py](course_agent/capabilities/base.py)：`CapabilityKind` / `CapabilitySpec` / `CapabilityCallResult` / `BaseCapabilityProvider`
+- [capabilities/registry.py](course_agent/capabilities/registry.py)：统一聚合 provider，按 `kind / enabled` 过滤
+- [capabilities/router.py](course_agent/capabilities/router.py)：给不同 Agent 暴露不同能力集合
+- [capabilities/adapters.py](course_agent/capabilities/adapters.py)：把 `ToolRegistry` 包成 provider，并把 capability 再包装回 AgentLoop 可消费的“工具视图”
+
+### 为什么不直接推翻 ToolRegistry？
+
+因为 Task 013 的目标是**渐进式引入**。现有 Tool 体系、AgentLoop、Task 012 的多 Agent 流程都保持可用；Solver 只是在需要时额外看到 Skill / MCP，不会破坏老链路。
+
+---
+
+## 🧠 Skill Runtime（Task 013）
+
+Skill 不是更底层的工具，而是**更高层的能力封装**。它可以带自己的输入输出约定、参数 schema，甚至内部再组合多个工具。
+
+### 本期内建的 2 个 Skill
+
+| Skill | 作用 |
+|---|---|
+| `study_plan_skill` | 基于主题和天数生成结构化复习计划 |
+| `quiz_from_notes_skill` | 基于一段笔记文本生成 1~5 道练习题 |
+
+### 运行时结构
+
+- [skills/runtime.py](course_agent/skills/runtime.py)：`SkillRegistry`、`@skill` 装饰器、`LocalSkillProvider`
+- [skills/builtin.py](course_agent/skills/builtin.py)：2 个内建 Skill Demo
+- [cli.py](course_agent/cli.py)：`course-agent skills list`
+
+### 为什么 Skill 先于 MCP 落地？
+
+- 本地、离线、无额外依赖，最好测
+- 先解决“高层能力复用”的问题
+- 给后续接外部能力前，先把统一 capability 接口磨稳
+
+---
+
+## 🔌 MCP Adapter（实验性，Task 013）
+
+Task 013 没有一上来就强依赖真实 MCP server，而是先走 **mock-first** 路线：默认不启用，不影响任何老功能；启用后可通过统一能力层被 Solver 发现。
+
+### 配置
+
+`config/default.yaml` 新增：
+
+```yaml
+mcp:
+  enabled: false
+  servers:
+    - name: demo
+      transport: mock
+      timeout_s: 15
+      enabled: true
+```
+
+也可用环境变量临时开启：
+
+```bash
+MCP_ENABLED=true uv run course-agent mcp list
+```
+
+### 代码入口
+
+- [mcp/config.py](course_agent/mcp/config.py)：`MCPConfig` / `MCPServerConfig`
+- [mcp/client.py](course_agent/mcp/client.py)：`MCPClientProvider`
+- [mcp/mock_server.py](course_agent/mcp/mock_server.py)：离线可测的 mock MCP tools
+
+### CLI 命令
+
+```bash
+uv run course-agent capabilities
+uv run course-agent skills list
+uv run course-agent mcp list
+```
+
+### Chainlit 展示
+
+Task 013 的 Chainlit Step 会按能力来源展示标签：
+
+- `Tool: xxx`
+- `Skill: xxx`
+- `MCP: demo/xxx`
+
+这样用户能一眼看出这次到底是内部工具在工作，还是系统借了一个 Skill / MCP 外脑。
 
 ---
 
@@ -779,16 +1048,37 @@ course_agent/
 │   ├── long_term.py      # Chroma PersistentClient（cosine HNSW）
 │   ├── manager.py        # MemoryManager（enrich_context 注入相关记忆）
 │   └── tools.py          # @tool recall / remember 工具
-├── agent/                # ✅ Task 011：专用 Agent 角色（多 Agent 编排第一块砖）
-│   ├── __init__.py       # 导出 ExaminerAgent / EXAMINER_SYSTEM_PROMPT
-│   └── examiner.py       # ExaminerAgent：限定工具集 + 独立 system_prompt 的 AgentLoop 包装
+├── agent/                # ✅ Task 011 + 012：专用 Agent 角色（多 Agent 编排基石）
+│   ├── __init__.py       # 导出 ExaminerAgent / Planner / Solver / Critic / Orchestrator + AgentMessage / BaseAgent
+│   ├── base.py           # ✅ Task 012：BaseAgent Protocol + AgentMessage（多 Agent 通信契约）
+│   ├── examiner.py       # ExaminerAgent：限定工具集 + 独立 system_prompt 的 AgentLoop 包装；Task 012 起判分可委托给 CriticAgent
+│   ├── planner.py        # ✅ Task 012：PlannerAgent（拆 sub_tasks，工具白名单仅 kb_search/list_mistakes，强制 JSON）
+│   ├── solver.py         # ✅ Task 012：SolverAgent（执行单个 sub_task，全工具集）
+│   ├── critic.py         # ✅ Task 012：CriticAgent（独立评审，工具白名单仅 kb_search，输出 {score, pass, feedback}）
+│   └── orchestrator.py   # ✅ Task 012：Orchestrator（Plan→Solve→Critique→Refine 闭环；硬上限 30 LLM 调用）
+├── capabilities/         # ✅ Task 013：统一能力层（internal_tool / skill / mcp）
+│   ├── base.py           # CapabilityKind / CapabilitySpec / CapabilityCallResult / BaseCapabilityProvider
+│   ├── registry.py       # CapabilityRegistry
+│   ├── router.py         # CapabilityRouter（按 Agent 收口能力）
+│   └── adapters.py       # ToolRegistry / Skill / MCP 的 provider 与工具视图适配
+├── skills/               # ✅ Task 013：本地 Skill Runtime
+│   ├── runtime.py        # SkillRegistry / @skill / LocalSkillProvider
+│   ├── builtin.py        # study_plan_skill / quiz_from_notes_skill
+│   └── registry.py       # 兼容导出
+├── mcp/                  # ✅ Task 013：MCP Adapter（mock-first）
+│   ├── config.py         # MCPConfig / MCPServerConfig
+│   ├── client.py         # MCPClientProvider
+│   └── mock_server.py    # 离线可测的 mock MCP tools
+├── observability/        # ✅ Task 012：可观测性（SQLite metrics）
+│   ├── __init__.py
+│   └── metrics.py        # Task 012/013：LLM + capability metrics，支持 aggregate_by_agent / aggregate_capabilities
 ├── context/              # 🔜 Prompt 模板 / 上下文压缩
-├── orchestrator/         # 🔜 Milestone 3：多 Agent 编排
+├── orchestrator/         # ⛔ 改在 agent/orchestrator.py（保留空目录占位以兼容旧 import 路径）
 ├── config.py             # Pydantic 配置 + .env 加载
 ├── logger.py             # loguru 包装
-└── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / **doctor**）
+└── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / doctor / metrics / capabilities / skills / mcp）
 
-tests/                    # 199 passed + 6 skipped：tools / agent_loop / config / llm / async / memory_* / web_tools / python_exec / pdf_tools / error_classification / doctor / image_ocr / code_solve / python_exec_packages / pdf_ocr_fallback / mistake_db / mistake_book / kb / cli_mistakes / **streaming / generator / examiner / cli_doctor_10**
+tests/                    # 307 passed + 6 skipped：在 Task 012 基础上新增 capability / skill / mcp / router / cli / orchestrator_capabilities 测试
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页
@@ -879,6 +1169,8 @@ course-agent ui
 - [`task/task_009.md`](task/task_009.md) — 让 Agent「看见」+「自己批改」（image_ocr / code_solve / extra_packages）✅
 - [`task/task_010.md`](task/task_010.md) — 让 Agent「记得住错」+「翻得到书」（错题本 + 教材 RAG）✅
 - [`task/task_011.md`](task/task_011.md) — 让 Agent「答得顺」+「考得出」（流式 + Examiner Agent + generate_question）✅
+- [`task/task_012.md`](task/task_012.md) — 让 Agent「分工合作」+「看得见账」（多 Agent + metrics + data layer）✅
+- [`task/task_013.md`](task/task_013.md) — 让 Agent「会借外脑」（Capability Layer + Skill Runtime + MCP Adapter）✅
 
 ---
 

@@ -7,6 +7,7 @@ from typing import Any
 
 import chainlit as cl
 
+from course_agent.capabilities.base import CapabilityKind, CapabilitySpec
 from course_agent.logger import get_logger
 
 _log = get_logger("ChainlitAdapter")
@@ -22,8 +23,23 @@ class ChainlitCallbacks:
       - on_final        -> 发送一条 assistant 消息（主回答）
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        capability_specs: list[CapabilitySpec] | None = None,
+    ) -> None:
         self._steps: dict[tuple[int, str], cl.Step] = {}
+        self._cap_map = {c.name: c for c in (capability_specs or [])}
+
+    def _format_step_name(self, name: str) -> str:
+        spec = self._cap_map.get(name)
+        if spec is None:
+            return f"🔧 {name}"
+        if spec.kind == CapabilityKind.SKILL:
+            return f"🧠 Skill: {spec.name}"
+        if spec.kind == CapabilityKind.MCP:
+            pretty = spec.meta.get("display_name") or spec.name
+            return f"🔌 MCP: {pretty}"
+        return f"🔧 Tool: {spec.name}"
 
     async def on_thought(self, step: int, content: str) -> None:
         if not content or not content.strip():
@@ -36,7 +52,7 @@ class ChainlitCallbacks:
         self, step: int, name: str, args: dict[str, Any]
     ) -> None:
         args_str = json.dumps(args, ensure_ascii=False, indent=2)
-        s = cl.Step(name=f"🔧 {name}", type="tool")
+        s = cl.Step(name=self._format_step_name(name), type="tool")
         await s.__aenter__()
         s.input = args_str
         self._steps[(step, name)] = s

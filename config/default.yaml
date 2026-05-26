@@ -12,5 +12,13 @@ agent:
   max_steps: 8
   timeout_seconds: 120
 
+mcp:
+  enabled: false
+  servers:
+    - name: demo
+      transport: mock
+      timeout_s: 15
+      enabled: true
+
 logging:
   level: INFO

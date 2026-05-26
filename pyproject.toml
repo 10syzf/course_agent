@@ -23,6 +23,8 @@ dependencies = [
     "tiktoken>=0.7",
     "pypdf>=4.0",
     "pypdfium2>=4.0",
+    "sqlalchemy>=2.0",
+    "aiosqlite>=0.19",
 ]
 
 [project.optional-dependencies]
