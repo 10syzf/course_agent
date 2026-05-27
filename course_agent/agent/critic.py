@@ -17,6 +17,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from course_agent.context.handoff import CriticDigest
 from course_agent.core.agent_loop import AgentLoop, AgentResult
 from course_agent.core.state import AgentCallbacks
 from course_agent.llm.base import BaseLLM, LLMMessage, StreamChunk
@@ -146,7 +147,15 @@ class CriticAgent:
                 continue
             parsed = _parse_critic_json(last_raw)
             if parsed:
-                return parsed
+                digest = CriticDigest.from_result(parsed)
+                return {
+                    "score": digest.score,
+                    "pass": digest.pass_,
+                    "feedback": digest.feedback,
+                    "must_fix": digest.must_fix,
+                    "optional_suggestions": digest.optional_suggestions,
+                    "evidence": digest.evidence,
+                }
             prompt = (
                 _build_critic_prompt(sub_task, solver_output)
                 + "\n\n⚠️ 上次输出无法解析为 JSON，请重新评审；"
@@ -156,10 +165,20 @@ class CriticAgent:
         _log.warning(
             f"Critic 解析 JSON 失败（重试已用尽），降级为保守通过；raw[:120]={last_raw[:120]}"
         )
+        digest = CriticDigest.from_result(
+            {
+                "score": 3,
+                "pass": True,
+                "feedback": "⚠️ Critic JSON 解析失败，默认通过",
+            }
+        )
         return {
-            "score": 3,
-            "pass": True,
-            "feedback": "⚠️ Critic JSON 解析失败，默认通过",
+            "score": digest.score,
+            "pass": digest.pass_,
+            "feedback": digest.feedback,
+            "must_fix": digest.must_fix,
+            "optional_suggestions": digest.optional_suggestions,
+            "evidence": digest.evidence,
         }
 
     async def arun(

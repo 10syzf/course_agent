@@ -24,11 +24,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from course_agent.agent.critic import CriticAgent
-from course_agent.agent.planner import PlannerAgent
+from course_agent.agent.planner import PlannerAgent, _to_subtask_briefs
 from course_agent.agent.solver import SolverAgent
 from course_agent.capabilities.adapters import build_default_capability_registry
 from course_agent.capabilities.registry import CapabilityRegistry
 from course_agent.capabilities.router import CapabilityRouter
+from course_agent.context.handoff import CriticDigest, HandoffContext, TaskContextLedger
 from course_agent.core.state import AgentCallbacks
 from course_agent.llm.base import BaseLLM, LLMMessage
 from course_agent.logger import get_logger
@@ -129,8 +130,10 @@ class Orchestrator:
         # 2. Per sub_task
         sub_results: list[SubTaskResult] = []
         accumulated_history: list[LLMMessage] = []
+        ledger = TaskContextLedger()
+        briefs = _to_subtask_briefs(plan)
 
-        for st in plan:
+        for idx, st in enumerate(plan):
             solver_output = ""
             critic_result: dict[str, Any] = {
                 "score": 3,
@@ -138,6 +141,7 @@ class Orchestrator:
                 "feedback": "（未评审）",
             }
             refine_round = 0
+            brief = briefs[idx]
             for refine_round in range(self.max_refine_per_task + 1):
                 if total_calls >= self.max_total_llm_calls:
                     raise RuntimeError(
@@ -146,9 +150,17 @@ class Orchestrator:
                     )
 
                 _log.info(f"Solve sub_task#{st['id']} (round {refine_round})")
+                handoff = HandoffContext(
+                    prior_subtask_summaries=list(ledger.summaries),
+                    critic_feedback=None if refine_round == 0 else critic_result.get("feedback", ""),
+                    refine_round=refine_round,
+                    pinned_facts=brief.pinned_facts,
+                )
                 solver_result = await self.solver.solve(
-                    st, history=accumulated_history if accumulated_history else None,
+                    st,
+                    history=accumulated_history if accumulated_history else None,
                     callbacks=callbacks,
+                    handoff=handoff,
                 )
                 solver_output = solver_result.answer
                 total_calls += 1
@@ -163,6 +175,7 @@ class Orchestrator:
 
                 _log.info(f"Critique sub_task#{st['id']}")
                 critic_result = await self.critic.critique(st, solver_output)
+                ledger.add_critic(CriticDigest.from_result(critic_result))
                 total_calls += 1
 
                 if critic_result.get("pass"):
@@ -173,17 +186,6 @@ class Orchestrator:
                         f"({self.max_refine_per_task})，保留当前结果"
                     )
                     break
-
-                # 注入 critic feedback 让 solver 重跑
-                accumulated_history.append(
-                    LLMMessage(
-                        role="system",
-                        content=(
-                            f"[Critic Feedback for sub-task #{st['id']}] "
-                            f"{critic_result.get('feedback', '')}"
-                        ),
-                    )
-                )
 
             sub_results.append(
                 SubTaskResult(
@@ -203,6 +205,11 @@ class Orchestrator:
                         + ("..." if len(solver_output) > 300 else "")
                     ),
                 )
+            )
+            ledger.add_summary(
+                f"Sub-Task #{st['id']} 完成："
+                f"{solver_output[:300]}"
+                + ("..." if len(solver_output) > 300 else "")
             )
 
         # 3. 合成最终答案

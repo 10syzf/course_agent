@@ -477,16 +477,16 @@ course-agent context profile
 
 ## 五、成功指标（本期验收标准）
 
-1. [ ] 系统引入统一 `ContextSection` / `ContextEnvelope` / `ContextBudget` 抽象
-2. [ ] `AgentLoop` 至少接入统一 context build / select / compress 流程
-3. [ ] Planner / Solver / Critic / Orchestrator 至少有一条多 Agent 路径接入 context handoff
-4. [ ] 记忆系统从“直接 enrich 文本”升级为“产出 context sections”
-5. [ ] 支持最小可用的上下文压缩管线（truncate / extractive / summary 至少 2 种）
-6. [ ] CLI 可 inspect / latest / profile 当前 context
-7. [ ] context artifact 可落盘并可回看压缩轨迹
-8. [ ] README 补充 Task 018 的 context governance 说明
-9. [ ] 单测新增后，`pytest` 总数 ≥ **505 passed**
-10. [ ] `ruff check .` 全绿
+1. [x] 系统引入统一 `ContextSection` / `ContextEnvelope` / `ContextBudget` 抽象
+2. [x] `AgentLoop` 至少接入统一 context build / select / compress 流程
+3. [x] Planner / Solver / Critic / Orchestrator 至少有一条多 Agent 路径接入 context handoff
+4. [x] 记忆系统从“直接 enrich 文本”升级为“产出 context sections”
+5. [x] 支持最小可用的上下文压缩管线（truncate / extractive / summary 至少 2 种）
+6. [x] CLI 可 inspect / latest / profile 当前 context
+7. [x] context artifact 可落盘并可回看压缩轨迹
+8. [x] README 补充 Task 018 的 context governance 说明
+9. [x] 单测新增后，`pytest` 总数 ≥ **505 passed**
+10. [x] `ruff check .` 全绿
 
 ---
 
@@ -733,51 +733,51 @@ Prompt Compiler
 ## 九、交付物 Checklist
 
 ### 代码
-- [ ] `course_agent/context/models.py`
-- [ ] `course_agent/context/budget.py`
-- [ ] `course_agent/context/compiler.py`
-- [ ] `course_agent/context/selectors.py`
-- [ ] `course_agent/context/compressor.py`
-- [ ] `course_agent/context/handoff.py`
-- [ ] `course_agent/context/artifacts.py`
-- [ ] `course_agent/context/profiling.py`
-- [ ] `course_agent/core/agent_loop.py`：接入统一 context compiler
-- [ ] `course_agent/memory/manager.py`：升级为 section-based memory policy
-- [ ] `course_agent/memory/short_term.py`：接入统一 compression pipeline
-- [ ] `course_agent/agent/planner.py`：接入 `SubTaskBrief`
-- [ ] `course_agent/agent/solver.py`：接入 context-aware solver input
-- [ ] `course_agent/agent/critic.py`：接入 `CriticDigest`
-- [ ] `course_agent/agent/orchestrator.py`：接入 `TaskContextLedger`
-- [ ] `course_agent/cli.py`：新增 `context` 子命令
+- [x] `course_agent/context/models.py`
+- [x] `course_agent/context/budget.py`
+- [x] `course_agent/context/compiler.py`
+- [x] `course_agent/context/selectors.py`
+- [x] `course_agent/context/compressor.py`
+- [x] `course_agent/context/handoff.py`
+- [x] `course_agent/context/artifacts.py`
+- [x] `course_agent/context/profiling.py`
+- [x] `course_agent/core/agent_loop.py`：接入统一 context compiler
+- [x] `course_agent/memory/manager.py`：升级为 section-based memory policy
+- [x] `course_agent/memory/short_term.py`：接入统一 compression pipeline
+- [x] `course_agent/agent/planner.py`：接入 `SubTaskBrief`
+- [x] `course_agent/agent/solver.py`：接入 context-aware solver input
+- [x] `course_agent/agent/critic.py`：接入 `CriticDigest`
+- [x] `course_agent/agent/orchestrator.py`：接入 `TaskContextLedger`
+- [x] `course_agent/cli.py`：新增 `context` 子命令
 
 ### 测试 / 配置
-- [ ] `tests/test_context_models.py`
-- [ ] `tests/test_context_selector.py`
-- [ ] `tests/test_context_compressor.py`
-- [ ] `tests/test_context_compiler.py`
-- [ ] `tests/test_context_cli.py`
-- [ ] `tests/test_context_artifact.py`
-- [ ] `tests/test_memory_context_policy.py`
-- [ ] `tests/test_multi_agent_context_handoff.py`
-- [ ] `pytest -q` ≥ **505 passed**
-- [ ] `ruff check .` 全绿
+- [x] `tests/test_context_models.py`
+- [x] `tests/test_context_selector.py`
+- [x] `tests/test_context_compressor.py`
+- [x] `tests/test_context_compiler.py`
+- [x] `tests/test_context_cli.py`
+- [x] `tests/test_context_artifact.py`
+- [x] `tests/test_memory_context_policy.py`
+- [x] `tests/test_multi_agent_context_handoff.py`
+- [x] `pytest -q` ≥ **505 passed**（当前 `508 passed, 6 skipped`）
+- [x] `ruff check .` 全绿
 
 ### 文档 / 分享素材
-- [ ] `README.md` 新增「🧠 Context Governance」一节
-- [ ] `README.md` 新增「🗜️ Context Compression」一节
-- [ ] `README.md` 更新 Task 018 进度行
-- [ ] `docs/tech_share_task018/context_governance.md`
-- [ ] `docs/tech_share_task018/agentloop_context_flow.md`
-- [ ] `docs/tech_share_task018/multi_agent_handoff.md`
-- [ ] `docs/tech_share_task018/compression_demo.md`
-- [ ] `task/task_018.md`（本文）成功指标与交付物回填
+- [x] `README.md` 新增「🧠 Context Governance」一节
+- [x] `README.md` 新增「🗜️ Context Compression」一节
+- [x] `README.md` 更新 Task 018 进度行
+- [x] `docs/tech_share_task018/context_governance.md`
+- [x] `docs/tech_share_task018/agentloop_context_flow.md`
+- [x] `docs/tech_share_task018/multi_agent_handoff.md`
+- [x] `docs/tech_share_task018/compression_demo.md`
+- [x] `task/task_018.md`（本文）成功指标与交付物回填
 
 ### 验证脚本（推荐手动跑）
-- [ ] `course-agent context inspect`
-- [ ] `course-agent context inspect --role solver --query "..."`
-- [ ] `course-agent context latest`
-- [ ] `course-agent context profile`
-- [ ] 运行一次 chat / multi-agent 流程后查看 context artifact
+- [x] `course-agent context inspect`
+- [x] `course-agent context inspect --role solver --query "..."`
+- [x] `course-agent context latest`
+- [x] `course-agent context profile`
+- [x] 运行一次 chat / multi-agent 流程后查看 context artifact
 
 ---
 
@@ -835,3 +835,23 @@ Prompt Compiler
 4. 为什么上下文压缩应该从局部技巧升级为平台能力
 
 ---
+
+## 十二、Task 018 完成小结
+
+本次执行完成了：
+
+1. ✅ **Context 基础模型**：新增 `ContextSection`、`ContextEnvelope`、`CompressionTrace` 与 `ContextBudget`；
+2. ✅ **Context Compiler**：统一编译 history / memory / session / task notes，并在进入消息层前完成 select / compress / drop；
+3. ✅ **Compression Pipeline**：新增 `truncate / extractive / summary` 三类压缩策略；
+4. ✅ **Artifact / Profile / CLI**：新增 `data/contexts/`、`context inspect / latest / profile` 与 context markdown/profile 输出；
+5. ✅ **运行时接入**：`AgentLoop` 与 `ReactGraphRuntime` 全部接入统一 context compiler，并暴露 `get_last_context()`；
+6. ✅ **记忆策略升级**：`MemoryManager` 从文本 enrich 升级为 section collector，`ShortTermMemory` 接入统一摘要压缩逻辑；
+7. ✅ **多 Agent handoff**：新增 `SubTaskBrief`、`HandoffContext`、`CriticDigest`、`TaskContextLedger`，并修正 refine feedback 真正进入下一轮 Solver；
+8. ✅ **新增测试 41 个**：覆盖 context model、selector、compressor、compiler、artifact、CLI、memory policy、handoff 与 runtime integration；
+9. ✅ **最终验证通过**：`uv run pytest -q` → `508 passed, 6 skipped`，`uv run ruff check .` 全绿，`context inspect / latest / profile` 以及 chat 路径验证通过。
+
+当前结果已经让项目从 Prompt-native Agent Platform 进一步推进为可讲清“上下文治理”的样板工程：
+
+- prompt 负责约束层
+- context 负责信息层
+- 记忆、压缩、handoff 开始在同一套模型里协同工作

@@ -8,6 +8,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from course_agent.context import (
+    ContextEnvelope,
+    compile_context,
+    render_context_messages,
+    save_context_artifact,
+)
 from course_agent.graph.react_graph import (
     build_react_graph,
     draw_react_mermaid,
@@ -15,7 +21,7 @@ from course_agent.graph.react_graph import (
 )
 from course_agent.graph.trace import build_replay_artifact
 from course_agent.llm.base import LLMMessage, StreamChunk
-from course_agent.prompt import PromptEnvelope, compile_prompt, save_prompt_artifact
+from course_agent.prompt import PromptEnvelope, save_prompt_artifact
 from course_agent.runtime.replay import save_replay_artifact
 from course_agent.tools.registry import ToolRegistry
 
@@ -30,6 +36,7 @@ class ReactGraphResult(BaseModel):
     backend: str = "langgraph"
     replay_path: str | None = None
     prompt_artifact_path: str | None = None
+    context_artifact_path: str | None = None
     status: str = "completed"
     waiting_reason: str | None = None
     session_id: str | None = None
@@ -51,6 +58,7 @@ class ReactGraphRuntime:
         system_prompt: str | None = None,
         trace_dir: str = "data/replays",
         prompt_dir: str = "data/prompts",
+        context_dir: str = "data/contexts",
     ) -> None:
         self.llm = llm
         self.registry = registry
@@ -58,6 +66,7 @@ class ReactGraphRuntime:
         self.max_steps = max_steps
         self.trace_dir = trace_dir
         self.prompt_dir = prompt_dir
+        self.context_dir = context_dir
         self.system_prompt = system_prompt or (
             "你是 Course Agent，一个帮助学生完成课程作业的智能助手。"
         )
@@ -65,6 +74,8 @@ class ReactGraphRuntime:
         self._last_replay: dict[str, Any] | None = None
         self._last_prompt: PromptEnvelope | None = None
         self._last_prompt_artifact_path: str | None = None
+        self._last_context: ContextEnvelope | None = None
+        self._last_context_artifact_path: str | None = None
         self._tool_schemas = self.registry.to_openai_schemas(self.tool_names)
         self._graph = build_react_graph(
             llm=self.llm,
@@ -73,31 +84,34 @@ class ReactGraphRuntime:
             callbacks_getter=lambda: self._callbacks,
         )
 
-    def _build_messages(
+    async def _build_messages(
         self,
         *,
         user_input: str,
         history: list[LLMMessage] | None = None,
         resume_input: str | None = None,
     ) -> list[dict[str, Any]]:
-        envelope = compile_prompt(
+        prompt_envelope, context_envelope = await compile_context(
             role="react",
             role_prompt=self.system_prompt,
             user_input=user_input,
-            history_count=len(history or []),
+            history=history,
             task_notes={"resume_input": resume_input or ""},
         )
-        self._last_prompt = envelope
+        self._last_prompt = prompt_envelope
+        self._last_context = context_envelope
         self._last_prompt_artifact_path = str(
-            save_prompt_artifact(envelope, prompt_dir=self.prompt_dir)
+            save_prompt_artifact(prompt_envelope, prompt_dir=self.prompt_dir)
         )
-        messages = [LLMMessage(role="system", content=envelope.static_prefix).model_dump()]
-        if envelope.dynamic_tail:
+        self._last_context_artifact_path = str(
+            save_context_artifact(context_envelope, context_dir=self.context_dir)
+        )
+        messages = [LLMMessage(role="system", content=prompt_envelope.static_prefix).model_dump()]
+        if prompt_envelope.dynamic_tail:
             messages.append(
-                LLMMessage(role="system", content=envelope.dynamic_tail).model_dump()
+                LLMMessage(role="system", content=prompt_envelope.dynamic_tail).model_dump()
             )
-        if history:
-            messages.extend([m.model_dump() for m in history if m.role != "system"])
+        messages.extend([m.model_dump() for m in render_context_messages(context_envelope)])
         messages.append(LLMMessage(role="user", content=user_input).model_dump())
         if resume_input:
             messages.append(
@@ -122,7 +136,7 @@ class ReactGraphRuntime:
             state = await self._graph.ainvoke(
                 make_initial_react_state(
                     user_input,
-                    messages=self._build_messages(
+                    messages=await self._build_messages(
                         user_input=user_input,
                         history=history,
                         resume_input=resume_input,
@@ -165,6 +179,7 @@ class ReactGraphRuntime:
             backend=self.backend,
             replay_path=str(replay_path),
             prompt_artifact_path=self._last_prompt_artifact_path,
+            context_artifact_path=self._last_context_artifact_path,
             status=status,
             waiting_reason=waiting_reason,
             session_id=session_id,
@@ -217,6 +232,9 @@ class ReactGraphRuntime:
 
     def get_last_prompt(self) -> PromptEnvelope | None:
         return self._last_prompt
+
+    def get_last_context(self) -> ContextEnvelope | None:
+        return self._last_context
 
 
 __all__ = ["ReactGraphResult", "ReactGraphRuntime"]

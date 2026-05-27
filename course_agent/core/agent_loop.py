@@ -10,10 +10,17 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from course_agent.context import (
+    ContextBudget,
+    ContextEnvelope,
+    compile_context,
+    render_context_messages,
+    save_context_artifact,
+)
 from course_agent.core.state import AgentCallbacks, AgentState
 from course_agent.llm.base import BaseLLM, LLMMessage, StreamChunk, ToolCall
 from course_agent.logger import get_logger
-from course_agent.prompt import PromptEnvelope, compile_prompt, save_prompt_artifact
+from course_agent.prompt import PromptEnvelope, save_prompt_artifact
 from course_agent.tools.registry import ToolRegistry, get_registry
 
 _DEFAULT_SYSTEM_PROMPT = (
@@ -33,6 +40,7 @@ class AgentResult(BaseModel):
     steps: int
     trace: list[dict[str, Any]]
     prompt_artifact_path: str | None = None
+    context_artifact_path: str | None = None
 
 
 class AgentLoop:
@@ -50,6 +58,8 @@ class AgentLoop:
         system_prompt: str | None = None,
         prompt_role: str = "react",
         prompt_dir: str = "data/prompts",
+        context_dir: str = "data/contexts",
+        memory_manager: Any | None = None,
     ) -> None:
         self.llm = llm
         self.registry = registry or get_registry()
@@ -58,41 +68,58 @@ class AgentLoop:
         self.system_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
         self.prompt_role = prompt_role
         self.prompt_dir = prompt_dir
+        self.context_dir = context_dir
+        self.memory_manager = memory_manager
         self.project_root = Path.cwd()
         self._last_prompt: PromptEnvelope | None = None
         self._last_prompt_artifact_path: str | None = None
+        self._last_context: ContextEnvelope | None = None
+        self._last_context_artifact_path: str | None = None
         self.log = get_logger("AgentLoop")
 
-    def _build_prompt_envelope(
+    async def _build_runtime_envelopes(
         self,
         *,
         user_input: str,
         history: list[LLMMessage] | None = None,
+        session_notes: dict[str, Any] | None = None,
         task_notes: dict[str, Any] | None = None,
-    ) -> PromptEnvelope:
-        envelope = compile_prompt(
+        budget: ContextBudget | None = None,
+    ) -> tuple[PromptEnvelope, ContextEnvelope]:
+        prompt_envelope, context_envelope = await compile_context(
             role=self.prompt_role,
             role_prompt=self.system_prompt,
             user_input=user_input,
-            history_count=len(history or []),
+            history=history,
             project_root=self.project_root,
+            session_notes=session_notes,
             task_notes=task_notes,
+            memory_manager=self.memory_manager,
+            budget=budget,
             metadata={
                 "tool_count": len(self.tool_names),
                 "max_steps": self.max_steps,
             },
         )
-        self._last_prompt = envelope
+        self._last_prompt = prompt_envelope
+        self._last_context = context_envelope
         self._last_prompt_artifact_path = str(
-            save_prompt_artifact(envelope, prompt_dir=self.prompt_dir)
+            save_prompt_artifact(prompt_envelope, prompt_dir=self.prompt_dir)
         )
-        return envelope
+        self._last_context_artifact_path = str(
+            save_context_artifact(context_envelope, context_dir=self.context_dir)
+        )
+        return prompt_envelope, context_envelope
 
     @staticmethod
-    def _build_prompt_messages(envelope: PromptEnvelope) -> list[LLMMessage]:
-        messages = [LLMMessage(role="system", content=envelope.static_prefix)]
-        if envelope.dynamic_tail:
-            messages.append(LLMMessage(role="system", content=envelope.dynamic_tail))
+    def _build_runtime_messages(
+        prompt_envelope: PromptEnvelope,
+        context_envelope: ContextEnvelope,
+    ) -> list[LLMMessage]:
+        messages = [LLMMessage(role="system", content=prompt_envelope.static_prefix)]
+        if prompt_envelope.dynamic_tail:
+            messages.append(LLMMessage(role="system", content=prompt_envelope.dynamic_tail))
+        messages.extend(render_context_messages(context_envelope))
         return messages
 
     @staticmethod
@@ -101,8 +128,12 @@ class AgentLoop:
 
     def run(self, user_input: str) -> AgentResult:
         state = AgentState()
-        envelope = self._build_prompt_envelope(user_input=user_input)
-        state.messages.extend(self._build_prompt_messages(envelope))
+        prompt_envelope, context_envelope = asyncio.run(
+            self._build_runtime_envelopes(user_input=user_input)
+        )
+        state.messages.extend(
+            self._build_runtime_messages(prompt_envelope, context_envelope)
+        )
         state.add_message(LLMMessage(role="user", content=user_input))
 
         tool_schemas = self.registry.to_openai_schemas(self.tool_names)
@@ -168,6 +199,7 @@ class AgentLoop:
             steps=state.step,
             trace=[t.model_dump() for t in state.trace],
             prompt_artifact_path=self._last_prompt_artifact_path,
+            context_artifact_path=self._last_context_artifact_path,
         )
 
     async def arun(
@@ -175,6 +207,9 @@ class AgentLoop:
         user_input: str,
         history: list[LLMMessage] | None = None,
         callbacks: AgentCallbacks | None = None,
+        *,
+        session_notes: dict[str, Any] | None = None,
+        task_notes: dict[str, Any] | None = None,
     ) -> AgentResult:
         """异步版 Agent Loop，支持回调和多轮历史.
 
@@ -184,15 +219,15 @@ class AgentLoop:
             callbacks: UI 层回调钩子；None 时等同纯运算
         """
         state = AgentState()
-        envelope = self._build_prompt_envelope(
+        prompt_envelope, context_envelope = await self._build_runtime_envelopes(
             user_input=user_input,
             history=history,
+            session_notes=session_notes,
+            task_notes=task_notes,
         )
-        if history:
-            state.messages.extend(self._build_prompt_messages(envelope))
-            state.messages.extend(self._normalize_history(history))
-        else:
-            state.messages.extend(self._build_prompt_messages(envelope))
+        state.messages.extend(
+            self._build_runtime_messages(prompt_envelope, context_envelope)
+        )
         state.add_message(LLMMessage(role="user", content=user_input))
 
         tool_schemas = self.registry.to_openai_schemas(self.tool_names)
@@ -274,6 +309,7 @@ class AgentLoop:
             steps=state.step,
             trace=[t.model_dump() for t in state.trace],
             prompt_artifact_path=self._last_prompt_artifact_path,
+            context_artifact_path=self._last_context_artifact_path,
         )
 
     @staticmethod
@@ -300,6 +336,9 @@ class AgentLoop:
         user_input: str,
         history: list[LLMMessage] | None = None,
         callbacks: AgentCallbacks | None = None,
+        *,
+        session_notes: dict[str, Any] | None = None,
+        task_notes: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """流式 ReAct 循环（Task 011）.
 
@@ -313,15 +352,15 @@ class AgentLoop:
         最终 chunk 的 finish_reason 永远非 None（'stop' / 'length' / 'error'）。
         """
         state = AgentState()
-        envelope = self._build_prompt_envelope(
+        prompt_envelope, context_envelope = await self._build_runtime_envelopes(
             user_input=user_input,
             history=history,
+            session_notes=session_notes,
+            task_notes=task_notes,
         )
-        if history:
-            state.messages.extend(self._build_prompt_messages(envelope))
-            state.messages.extend(self._normalize_history(history))
-        else:
-            state.messages.extend(self._build_prompt_messages(envelope))
+        state.messages.extend(
+            self._build_runtime_messages(prompt_envelope, context_envelope)
+        )
         state.add_message(LLMMessage(role="user", content=user_input))
 
         tool_schemas = self.registry.to_openai_schemas(self.tool_names)
@@ -374,6 +413,8 @@ class AgentLoop:
                     user_input=fallback_user,
                     history=fallback_history if fallback_history else None,
                     callbacks=callbacks,
+                    session_notes=session_notes,
+                    task_notes=task_notes,
                 )
                 yield StreamChunk(
                     delta_text=result.answer,
@@ -459,6 +500,9 @@ class AgentLoop:
 
     def get_last_prompt(self) -> PromptEnvelope | None:
         return self._last_prompt
+
+    def get_last_context(self) -> ContextEnvelope | None:
+        return self._last_context
 
 
 def _merge_tc_delta(

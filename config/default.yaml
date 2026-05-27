@@ -19,6 +19,7 @@ runtime:
   draw_graph: true
   trace_dir: data/replays
   prompt_dir: data/prompts
+  context_dir: data/contexts
   session_dir: data/sessions
   hitl_enabled: true
 

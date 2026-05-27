@@ -165,6 +165,7 @@ Task 014 没有为了接入 LangGraph 而推翻原有抽象，而是先补了一
 | **Task 015 · 让 Agent「可回放、可比较、可演示」** | ✅ | **graph-native 单 Agent `ReactGraphRuntime` + replay / trace export + benchmark / compare CLI + Chainlit graph runtime 摘要 + 技术分享素材目录 + 新增 39 个测试用例** |
 | **Task 016 · 让 Agent「有状态、可恢复、可人工介入」** | ✅ | **`TaskSession` / `SessionStore` / `SessionRuntime` + `session` CLI（start/list/show/resume/continue/cancel）+ graph HITL 节点（`wait_human_input` / `wait_approval`）+ Chainlit 任务态展示 + 技术分享素材目录 + 新增 34 个测试用例** |
 | **Task 017 · 让 Agent「有 Prompt 架构」** | ✅ | **统一 `PromptEnvelope` / Prompt Compiler + `static_prefix` / `dynamic_tail` 分层 + `COURSE_AGENT.md` 项目级说明文件 + `prompt inspect/latest/profile` CLI + prompt artifact + prompt profiling + 新增 37 个测试用例** |
+| **Task 018 · 让 Agent「有 Context 治理」** | ✅ | **统一 `ContextSection` / `ContextEnvelope` / `ContextBudget` + context selector / compressor / compiler / artifact / profiling + `context inspect/latest/profile` CLI + `AgentLoop` / `ReactGraphRuntime` context 接入 + memory section policy + multi-agent handoff + 新增 41 个测试用例** |
 | Milestone 3 · 多 Agent 编排 | ✅ | Planner / Solver / Critic / Orchestrator 四角分工 + Refine 闭环（Task 012）|
 
 ---
@@ -809,7 +810,7 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：**467 passed + 6 skipped**（live tests 默认跳过；Task 017 在 Task 016 基础上继续新增 37 个回归测试，覆盖 prompt model/static prefix/dynamic tail/compiler、project instructions、prompt CLI、prompt profiling 与 AgentLoop/ReactGraphRuntime prompt integration）。
+**当前测试状态**：**508 passed + 6 skipped**（live tests 默认跳过；Task 018 在 Task 017 基础上继续新增 41 个回归测试，覆盖 context model/selector/compressor/compiler、artifact、context CLI、memory policy、multi-agent handoff 与 runtime integration）。
 
 ---
 
@@ -1012,6 +1013,82 @@ uv run course-agent prompt profile
 - section 列表
 - `static_hash` / `dynamic_hash`
 - static / dynamic 长度占比
+
+---
+
+## 🧠 Context Governance（Task 018）
+
+Task 018 把“真正进入模型的信息”也做成了统一基础设施，不再只是把 `history / memory / feedback / session notes` 临时拼接进消息列表。
+
+- `course_agent/context/models.py`：定义 `ContextSection`、`CompressionTrace`、`ContextEnvelope`
+- `course_agent/context/budget.py`：定义 `ContextBudget`
+- `course_agent/context/selectors.py`：根据 budget / priority / pin 规则选择 section
+- `course_agent/context/compressor.py`：提供 `truncate / extractive / summary` 压缩策略
+- `course_agent/context/compiler.py`：统一编译 history / memory / session / task notes，并渲染为消息层
+- `course_agent/context/artifacts.py`：保存 / 读取 / latest / markdown 导出
+- `course_agent/context/profiling.py`：统计 section、长度、压缩收益与来源分布
+
+这意味着系统现在开始具备：
+
+- 可预算的上下文选择
+- 可压缩的上下文治理
+- 可 inspect 的 context artifact
+- 可分角色观察的 context view
+
+如果说 Task 017 回答的是“模型被怎样约束”，那么 Task 018 回答的是“模型到底看到了哪些信息”。
+
+---
+
+## 🗜️ Context Compression（Task 018）
+
+Task 018 把上下文压缩从 `ShortTermMemory._compress()` 里的局部能力，升级成了平台级 pipeline：
+
+- `truncate`：超预算时的保底裁剪
+- `extractive`：优先保留关键 bullet / 关键行
+- `summary`：面向长文本、长期记忆和 handoff 的摘要压缩
+
+### Context Compiler 现在做什么
+
+- 先用 Task 017 的 Prompt Compiler 生成 `static_prefix` / `dynamic_tail`
+- 再收集 `history`、memory sections、`session_notes`、`task_notes`
+- 然后按 `ContextBudget` 进行 select / compress / drop
+- 最终把 selected sections 渲染成标准 `LLMMessage`
+
+### 接入点
+
+- `course_agent/core/agent_loop.py`
+- `course_agent/runtime/react_graph_runtime.py`
+- `course_agent/memory/manager.py`
+- `course_agent/memory/short_term.py`
+- `course_agent/agent/solver.py`
+- `course_agent/agent/orchestrator.py`
+
+### Multi-Agent Context Handoff
+
+Task 018 还顺手把多 Agent 的交接变清晰了：
+
+- `SubTaskBrief`：Planner 产出的结构化 brief
+- `HandoffContext`：Solver refine 时显式携带 prior summaries / critic feedback / pinned facts
+- `CriticDigest`：Critic 结果转成可继续传递的结构化 digest
+- `TaskContextLedger`：Orchestrator 记录跨 sub-task 摘要与 critic digests
+
+这样 refine feedback 不再伪装成 `system history`，而是作为显式 handoff 数据进入下一轮 Solver。
+
+### Context CLI
+
+```bash
+uv run course-agent context inspect
+uv run course-agent context inspect --role solver --query "帮我总结上下文压缩策略"
+uv run course-agent context latest
+uv run course-agent context profile
+```
+
+这些命令可以直接查看：
+
+- 当前 context sections
+- 哪些 section 被保留 / 压缩 / 丢弃
+- `total_chars` / `selected_chars`
+- 压缩收益与来源分布
 
 ---
 
@@ -1380,7 +1457,15 @@ course_agent/
 ├── observability/        # ✅ Task 012：可观测性（SQLite metrics）
 │   ├── __init__.py
 │   └── metrics.py        # Task 012/013/014：LLM + capability metrics，支持 runtime_backend 维度
-├── context/              # 🔜 Prompt 模板 / 上下文压缩
+├── context/              # ✅ Task 018：Context 治理基础设施
+│   ├── models.py         # ContextSection / ContextEnvelope / CompressionTrace
+│   ├── budget.py         # ContextBudget
+│   ├── compiler.py       # Context Compiler + message 渲染
+│   ├── selectors.py      # budget / priority / pin / drop
+│   ├── compressor.py     # truncate / extractive / summary
+│   ├── handoff.py        # SubTaskBrief / HandoffContext / CriticDigest / Ledger
+│   ├── artifacts.py      # context artifact 落盘 / latest / markdown
+│   └── profiling.py      # context profiling
 ├── orchestrator/         # ⛔ 改在 agent/orchestrator.py（保留空目录占位以兼容旧 import 路径）
 ├── config.py             # Pydantic 配置 + .env 加载
 ├── logger.py             # loguru 包装
@@ -1390,9 +1475,10 @@ COURSE_AGENT.md           # ✅ Task 017：项目级 prompt contract（动态尾
 docs/
 ├── tech_share_task015/   # Task 015：技术分享素材（架构演进 / demo / benchmark / replay）
 ├── tech_share_task016/   # Task 016：Stateful Agent / HITL / Resume 分享素材
-└── tech_share_task017/   # Task 017：Prompt Architecture / inspect / profiling 分享素材
+├── tech_share_task017/   # Task 017：Prompt Architecture / inspect / profiling 分享素材
+└── tech_share_task018/   # Task 018：Context Governance / compression / handoff 分享素材
 
-tests/                    # 467 passed + 6 skipped：覆盖 Task 017 的 prompt compiler / inspect / profiling / integration
+tests/                    # 508 passed + 6 skipped：覆盖 Task 018 的 context compiler / compression / handoff / integration
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页
@@ -1489,6 +1575,7 @@ course-agent ui
 - [`task/task_015.md`](task/task_015.md) — 让 Agent「可回放、可比较、可演示」（replay + benchmark + demo）✅
 - [`task/task_016.md`](task/task_016.md) — 让 Agent「有状态、可恢复、可人工介入」（session + HITL + resume）✅
 - [`task/task_017.md`](task/task_017.md) — 让 Agent「有 Prompt 架构」（PromptEnvelope + compiler + inspect/profile）✅
+- [`task/task_018.md`](task/task_018.md) — 让 Agent「有 Context 治理」（ContextEnvelope + budget + compression + handoff）✅
 
 ---
 

@@ -88,6 +88,10 @@ def create_chat_runtime(
         "prompt_dir",
         getattr(getattr(cfg, "runtime", None), "prompt_dir", "data/prompts"),
     )
+    context_dir = kwargs.pop(
+        "context_dir",
+        getattr(getattr(cfg, "runtime", None), "context_dir", "data/contexts"),
+    )
 
     if selected == RuntimeBackend.LANGGRAPH.value:
         return ReactGraphRuntime(
@@ -98,6 +102,7 @@ def create_chat_runtime(
             system_prompt=system_prompt,
             trace_dir=trace_dir,
             prompt_dir=prompt_dir,
+            context_dir=context_dir,
         )
     return AgentLoop(
         llm=llm,
@@ -106,6 +111,7 @@ def create_chat_runtime(
         max_steps=max_steps,
         system_prompt=system_prompt,
         prompt_dir=prompt_dir,
+        context_dir=context_dir,
     )
 
 

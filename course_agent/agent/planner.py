@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from course_agent.capabilities.router import CapabilityRouter
+from course_agent.context.handoff import SubTaskBrief
 from course_agent.core.agent_loop import AgentLoop, AgentResult
 from course_agent.core.state import AgentCallbacks
 from course_agent.llm.base import BaseLLM, LLMMessage, StreamChunk
@@ -90,6 +91,11 @@ def _parse_plan_json(raw: str) -> list[dict[str, Any]] | None:
             }
         )
     return out or None
+
+
+def _to_subtask_briefs(sub_tasks: list[dict[str, Any]]) -> list[SubTaskBrief]:
+    """把 Planner 的原始 sub_task dict 转为结构化 brief."""
+    return [SubTaskBrief.from_sub_task(item) for item in sub_tasks]
 
 
 class PlannerAgent:
@@ -220,4 +226,4 @@ class PlannerAgent:
         return f"PlannerAgent(tools={self.allowed_tools}, max_sub_tasks={self.max_sub_tasks})"
 
 
-__all__ = ["PlannerAgent", "PLANNER_SYSTEM_PROMPT", "_parse_plan_json"]
+__all__ = ["PlannerAgent", "PLANNER_SYSTEM_PROMPT", "_parse_plan_json", "_to_subtask_briefs"]

@@ -33,6 +33,7 @@ class RuntimeConfig(BaseModel):
     draw_graph: bool = True
     trace_dir: str = "data/replays"
     prompt_dir: str = "data/prompts"
+    context_dir: str = "data/contexts"
     session_dir: str = "data/sessions"
     hitl_enabled: bool = True
 
@@ -127,6 +128,8 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
         runtime_data["trace_dir"] = os.getenv("RUNTIME_TRACE_DIR")
     if os.getenv("RUNTIME_PROMPT_DIR"):
         runtime_data["prompt_dir"] = os.getenv("RUNTIME_PROMPT_DIR")
+    if os.getenv("RUNTIME_CONTEXT_DIR"):
+        runtime_data["context_dir"] = os.getenv("RUNTIME_CONTEXT_DIR")
     if os.getenv("RUNTIME_SESSION_DIR"):
         runtime_data["session_dir"] = os.getenv("RUNTIME_SESSION_DIR")
     if os.getenv("RUNTIME_HITL_ENABLED"):

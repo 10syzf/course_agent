@@ -19,6 +19,7 @@ from course_agent.capabilities.adapters import (
 )
 from course_agent.capabilities.registry import CapabilityRegistry
 from course_agent.capabilities.router import CapabilityRouter
+from course_agent.context.handoff import HandoffContext, SubTaskBrief
 from course_agent.core.agent_loop import AgentLoop, AgentResult
 from course_agent.core.state import AgentCallbacks
 from course_agent.llm.base import BaseLLM, LLMMessage, StreamChunk
@@ -54,6 +55,24 @@ def _build_sub_task_prompt(sub_task: dict[str, Any]) -> str:
         f"**推荐工具**（仅供参考）：{suggested_line}\n\n"
         "请执行并直接给出最终结果。"
     )
+
+
+def _append_handoff_prompt(prompt: str, handoff: HandoffContext | None) -> str:
+    if handoff is None:
+        return prompt
+    lines = ["", "## 补充上下文"]
+    if handoff.prior_subtask_summaries:
+        lines.append("### 已完成子任务摘要")
+        lines.extend(f"- {item}" for item in handoff.prior_subtask_summaries)
+    if handoff.critic_feedback:
+        lines.append("### 上一轮 Critic 意见")
+        lines.append(handoff.critic_feedback)
+    if handoff.pinned_facts:
+        lines.append("### 必须保留的事实")
+        lines.extend(f"- {item}" for item in handoff.pinned_facts)
+    if handoff.refine_round:
+        lines.append(f"### 当前 refine 轮次\n- 第 {handoff.refine_round} 轮")
+    return prompt + "\n".join(lines)
 
 
 class SolverAgent:
@@ -107,13 +126,18 @@ class SolverAgent:
         sub_task: dict[str, Any],
         history: list[LLMMessage] | None = None,
         callbacks: AgentCallbacks | None = None,
+        handoff: HandoffContext | None = None,
     ) -> AgentResult:
         """执行单个 sub_task；返回 AgentResult."""
-        prompt = _build_sub_task_prompt(sub_task)
+        brief = SubTaskBrief.from_sub_task(sub_task)
+        prompt = _append_handoff_prompt(_build_sub_task_prompt(brief.sub_task), handoff)
         token = set_current_agent(self.name)
         try:
             return await self.loop.arun(
-                user_input=prompt, history=history, callbacks=callbacks
+                user_input=prompt,
+                history=history,
+                callbacks=callbacks,
+                task_notes=handoff.to_task_notes() if handoff is not None else None,
             )
         finally:
             from course_agent.observability.metrics import _CURRENT_AGENT
@@ -143,4 +167,4 @@ class SolverAgent:
         return f"SolverAgent(tools={len(self.allowed_tools)}个, max_steps={self.loop.max_steps})"
 
 
-__all__ = ["SolverAgent", "SOLVER_SYSTEM_PROMPT", "_build_sub_task_prompt"]
+__all__ = ["SolverAgent", "SOLVER_SYSTEM_PROMPT", "_append_handoff_prompt", "_build_sub_task_prompt"]

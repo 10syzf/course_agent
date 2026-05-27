@@ -13,6 +13,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from course_agent.context.compressor import summarize_text
 from course_agent.llm.base import BaseLLM, LLMMessage
 from course_agent.logger import get_logger
 from course_agent.memory.base import MemoryRecord
@@ -116,7 +117,8 @@ class ShortTermMemory:
                     LLMMessage(role="user", content=full),
                 ]
             )
-            self._summary = (resp.content or "").strip() or self._summary
+            summary = (resp.content or "").strip() or self._summary or ""
+            self._summary = summarize_text(summary, max_chars=200) if summary else None
             self._records = self._records[cut:]
             _log.info(
                 f"短期记忆已压缩：丢弃 {cut} 条 → 摘要 {len(self._summary or '')} 字"

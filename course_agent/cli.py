@@ -12,6 +12,14 @@ from rich.panel import Panel
 from rich.table import Table
 
 from course_agent.config import get_config
+from course_agent.context import (
+    compile_context,
+    context_to_markdown,
+    latest_context_path,
+    load_context_artifact,
+    profile_context,
+    save_context_artifact,
+)
 from course_agent.llm import create_llm
 from course_agent.logger import setup_logger
 from course_agent.prompt import (
@@ -35,6 +43,10 @@ console = Console()
 # Task 010：错题本 CLI 子命令
 mistakes_app = typer.Typer(help="错题本管理（Task 010）")
 app.add_typer(mistakes_app, name="mistakes")
+
+# Task 018：context CLI 子命令
+context_app = typer.Typer(help="Context Inspect / Profile（Task 018）")
+app.add_typer(context_app, name="context")
 
 
 @mistakes_app.command("list")
@@ -470,6 +482,17 @@ def _build_prompt_envelope_for_cli(role: str, query: str):
     )
 
 
+async def _build_context_envelope_for_cli(role: str, query: str):
+    cfg = get_config()
+    return await compile_context(
+        role=role,
+        role_prompt=_resolve_role_prompt(role),
+        user_input=query,
+        mcp_notes={"enabled": cfg.mcp.enabled},
+        task_notes={"source": "cli_context_command"},
+    )
+
+
 @prompt_app.command("inspect")
 def prompt_inspect(
     role: str = typer.Option("react", "--role", help="react | planner | solver | critic | examiner"),
@@ -527,6 +550,69 @@ def prompt_profile(
         "full_chars",
         "static_ratio",
         "dynamic_ratio",
+    ):
+        table.add_row(key, str(row[key]))
+    console.print(table)
+
+
+@context_app.command("inspect")
+def context_inspect(
+    role: str = typer.Option("react", "--role", help="react | planner | solver | critic | examiner"),
+    query: str = typer.Option("你好，请介绍一下你的能力", "--query", help="本次要编译的 query"),
+) -> None:
+    """查看当前 context section 与压缩结果."""
+    setup_logger()
+    cfg = get_config()
+    import asyncio
+
+    _, envelope = asyncio.run(_build_context_envelope_for_cli(role, query))
+    path = save_context_artifact(envelope, context_dir=cfg.runtime.context_dir)
+    console.print(
+        Panel.fit(
+            f"role={envelope.role}\n"
+            f"total_chars={envelope.total_chars}\n"
+            f"selected_chars={envelope.selected_chars}\n"
+            f"path={path}",
+            title="Context Inspect",
+        )
+    )
+    console.print(context_to_markdown(envelope))
+
+
+@context_app.command("latest")
+def context_latest() -> None:
+    """查看最近一次 context artifact."""
+    setup_logger()
+    cfg = get_config()
+    path = latest_context_path(cfg.runtime.context_dir)
+    if path is None:
+        console.print("暂无 context artifact。")
+        raise typer.Exit(code=1)
+    envelope = load_context_artifact(path)
+    console.print(context_to_markdown(envelope))
+
+
+@context_app.command("profile")
+def context_profile(
+    role: str = typer.Option("react", "--role", help="react | planner | solver | critic | examiner"),
+    query: str = typer.Option("你好，请介绍一下你的能力", "--query", help="本次要编译的 query"),
+) -> None:
+    """输出 context 长度、section 与来源占比."""
+    setup_logger()
+    import asyncio
+
+    _, envelope = asyncio.run(_build_context_envelope_for_cli(role, query))
+    row = profile_context(envelope)
+    table = Table(title=f"Context Profile · {role}", show_lines=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="white")
+    for key in (
+        "role",
+        "total_chars",
+        "selected_chars",
+        "section_count",
+        "dropped_sections",
+        "compression_saved_chars",
     ):
         table.add_row(key, str(row[key]))
     console.print(table)
