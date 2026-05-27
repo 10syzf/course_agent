@@ -806,7 +806,76 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：**357 passed + 6 skipped**（live tests 默认跳过；Task 014 在原有 307 个基线用例上新增 50 个回归测试，覆盖 runtime backend、LangGraph orchestrator、LangChain adapter、CLI runtime/doctor、metrics backend 和 Chainlit runtime 切换）。
+**当前测试状态**：**396 passed + 6 skipped**（live tests 默认跳过；Task 015 在 Task 014 基础上继续新增 39 个回归测试，覆盖 graph-native react runtime、replay export、benchmark compare、CLI replay/benchmark、trace schema 和 Chainlit graph 事件摘要）。
+
+---
+
+## 📈 Benchmark / Compare（Task 015）
+
+Task 015 不再只停留在“已经接入 LangGraph”，而是开始回答更工程化的问题：
+
+- `legacy` 和 `langgraph` 单 Agent runtime 的行为是否等价
+- graph-native runtime 的 trace / 节点数 / tool loop 是否可观察
+- 技术分享时能不能拿出一组真实对比数据
+
+因此新增了：
+
+```bash
+uv run course-agent benchmark runtime --backend legacy
+uv run course-agent benchmark runtime --backend langgraph
+uv run course-agent benchmark compare
+```
+
+输出会展示：
+
+- backend
+- runtime_kind
+- latency_ms
+- steps
+- tool_calls
+- node_count
+
+其中：
+
+- `legacy` 对应原有 `AgentLoop`
+- `langgraph` 对应新的 `ReactGraphRuntime`
+
+这让项目第一次可以在同一条 query 下做**运行时对比**，而不是只凭感觉讨论迁移价值。
+
+---
+
+## 🔁 Replay / Trace Export（Task 015）
+
+Task 015 还把 graph execution 变成了可沉淀工件。
+
+现在 `langgraph` 单 Agent runtime 每次运行后，都会把 replay artifact 落到：
+
+- 默认目录：`data/replays/`
+
+可用命令：
+
+```bash
+uv run course-agent replay latest
+uv run course-agent replay show data/replays/<thread_id>.json
+uv run course-agent replay export --format md
+```
+
+replay artifact 至少包含：
+
+- `thread_id`
+- `backend`
+- `runtime_kind`
+- `input`
+- `trace`
+- `node_sequence`
+- `final_answer`
+
+它的意义不是“多保存一份日志”，而是把一次运行变成：
+
+- 可复盘
+- 可展示
+- 可分享
+- 可用于 benchmark / demo / 架构讲解
 
 ---
 
@@ -1118,19 +1187,26 @@ course_agent/
 │   ├── solver.py         # ✅ Task 012：SolverAgent（执行单个 sub_task，全工具集）
 │   ├── critic.py         # ✅ Task 012：CriticAgent（独立评审，工具白名单仅 kb_search，输出 {score, pass, feedback}）
 │   └── orchestrator.py   # ✅ Task 012：Orchestrator（Plan→Solve→Critique→Refine 闭环；硬上限 30 LLM 调用）
-├── runtime/              # ✅ Task 014：统一运行时入口（legacy / langgraph）
-│   ├── __init__.py       # create_runtime 统一导出
-│   ├── backend.py        # backend 选择器
+├── runtime/              # ✅ Task 014 + 015：统一运行时入口（multi-agent + chat runtime）
+│   ├── __init__.py       # create_runtime / create_chat_runtime 统一导出
+│   ├── backend.py        # orchestrator runtime + chat runtime 选择器
 │   ├── legacy_runtime.py # 兼容旧 Orchestrator 的薄封装
 │   ├── langgraph_runtime.py
 │   │                     # LangGraph Runtime（checkpoint / graph invoke / mermaid）
+│   ├── react_graph_runtime.py
+│   │                     # Task 015：graph-native 单 Agent ReAct Runtime
+│   ├── replay.py         # Task 015：replay artifact 读写与导出
+│   ├── benchmark.py      # Task 015：legacy / langgraph runtime 对比
 │   ├── langchain_adapters.py
 │   │                     # BaseLLM / Tool / Capability 到 LangChain 的桥接层
 │   └── state.py          # GraphRuntimeState / state_to_result / trace helper
-├── graph/                # ✅ Task 014：LangGraph 节点、边与图构建
+├── graph/                # ✅ Task 014 + 015：LangGraph 节点、边与图构建
 │   ├── __init__.py
 │   ├── orchestrator_graph.py
 │   │                     # Planner→Solver→Critic→Refine 图构建
+│   ├── react_graph.py    # Task 015：单 Agent ReAct graph
+│   ├── react_nodes.py    # Task 015：react graph 节点
+│   ├── trace.py          # Task 015：trace / replay schema helper
 │   ├── nodes.py          # 节点实现
 │   ├── edges.py          # 条件边判定
 │   └── prompts.py        # Mermaid fallback / 图常量
@@ -1156,7 +1232,10 @@ course_agent/
 ├── logger.py             # loguru 包装
 └── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / doctor / metrics / capabilities / skills / mcp）
 
-tests/                    # 357 passed + 6 skipped：新增 Task 014 runtime / graph / adapters / CLI / Chainlit 回归测试
+docs/
+└── tech_share_task015/   # Task 015：技术分享素材（架构演进 / demo / benchmark / replay）
+
+tests/                    # 396 passed + 6 skipped：覆盖 Task 015 的 react graph / replay / benchmark / Chainlit graph 摘要
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页

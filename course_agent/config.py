@@ -28,8 +28,10 @@ class AgentConfig(BaseModel):
 
 class RuntimeConfig(BaseModel):
     backend: str = "legacy"
+    agent_loop_backend: str = "legacy"
     checkpoint: str = "memory"
     draw_graph: bool = True
+    trace_dir: str = "data/replays"
 
 
 class LoggingConfig(BaseModel):
@@ -107,6 +109,8 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
     runtime_data = data.get("runtime", {})
     if os.getenv("RUNTIME_BACKEND"):
         runtime_data["backend"] = os.getenv("RUNTIME_BACKEND")
+    if os.getenv("RUNTIME_AGENT_LOOP_BACKEND"):
+        runtime_data["agent_loop_backend"] = os.getenv("RUNTIME_AGENT_LOOP_BACKEND")
     if os.getenv("RUNTIME_CHECKPOINT"):
         runtime_data["checkpoint"] = os.getenv("RUNTIME_CHECKPOINT")
     if os.getenv("RUNTIME_DRAW_GRAPH"):
@@ -116,6 +120,8 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
             "yes",
             "on",
         }
+    if os.getenv("RUNTIME_TRACE_DIR"):
+        runtime_data["trace_dir"] = os.getenv("RUNTIME_TRACE_DIR")
 
     mcp_data = data.get("mcp", {})
     if os.getenv("MCP_ENABLED"):

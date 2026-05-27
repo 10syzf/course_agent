@@ -22,7 +22,7 @@ from course_agent.memory import (
     create_embedder,
 )
 from course_agent.memory.tools import set_active_manager
-from course_agent.runtime import create_runtime
+from course_agent.runtime import create_chat_runtime, create_runtime
 from course_agent.tools import get_registry
 from course_agent.ui.adapters import ChainlitCallbacks
 
@@ -240,7 +240,8 @@ def _build_memory(llm, *, enable_long: bool, persist_dir: Path) -> MemoryManager
 def _build_agent(cfg, system_prompt: str | None = None) -> AgentLoop:
     """按当前 cfg 构建一个全新的 Agent."""
     llm = create_llm(cfg.llm)
-    return AgentLoop(
+    return create_chat_runtime(
+        cfg,
         llm=llm,
         max_steps=cfg.agent.max_steps,
         system_prompt=system_prompt,
@@ -705,6 +706,26 @@ async def on_message(message: cl.Message) -> None:
         )
         final_text = result.answer or final_text
         await cl.Message(content=final_text, author="Course Agent").send()
+
+    # Task 015：graph-native react runtime 的最小摘要展示
+    if getattr(agent, "runtime_kind", "") == "react_graph" and hasattr(
+        agent, "get_last_replay"
+    ):
+        replay = agent.get_last_replay() or {}
+        nodes = replay.get("node_sequence", [])
+        if nodes:
+            try:
+                async with cl.Step(name="Graph Runtime", type="tool") as graph_step:
+                    graph_step.input = user_text
+                    graph_step.output = (
+                        f"backend=`{replay.get('backend', 'langgraph')}`\n"
+                        f"runtime=`{replay.get('runtime_kind', 'react_graph')}`\n"
+                        f"nodes=`{' -> '.join(nodes)}`\n"
+                        f"total steps=`{replay.get('steps', 0)}`\n"
+                        f"replay=`{replay.get('path', '')}`"
+                    )
+            except Exception as e:  # noqa: BLE001
+                _log.warning(f"Graph Runtime Step 渲染异常：{e}")
 
     # 写入记忆（短期 + 可选长期）
     if memory is not None:

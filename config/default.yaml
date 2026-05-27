@@ -13,9 +13,11 @@ agent:
   timeout_seconds: 120
 
 runtime:
-  backend: langgraph    # legacy | langgraph
-  checkpoint: memory    # none | memory | sqlite
+  backend: langgraph              # legacy | langgraph（多 Agent Orchestrator）
+  agent_loop_backend: legacy      # legacy | langgraph（单 Agent chat / react 模式）
+  checkpoint: memory              # none | memory | sqlite
   draw_graph: true
+  trace_dir: data/replays
 
 mcp:
   enabled: false

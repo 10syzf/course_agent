@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from course_agent.agent import Orchestrator, OrchestratorResult
-from course_agent.graph import build_orchestrator_graph, draw_mermaid
+from course_agent.graph.orchestrator_graph import build_orchestrator_graph, draw_mermaid
 from course_agent.observability.metrics import (
     reset_current_runtime_backend,
     set_current_runtime_backend,

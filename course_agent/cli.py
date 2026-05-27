@@ -12,10 +12,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from course_agent.config import get_config
-from course_agent.core import AgentLoop
 from course_agent.llm import create_llm
 from course_agent.logger import setup_logger
-from course_agent.runtime import create_runtime
+from course_agent.runtime import create_chat_runtime, create_runtime
 from course_agent.tools import get_registry
 
 app = typer.Typer(help="Course Agent - 帮助学生完成课程作业的智能 Agent (MVP)")
@@ -116,21 +115,29 @@ def chat(
     query: str = typer.Argument(..., help="学生提出的问题或作业描述"),
     show_trace: bool = typer.Option(False, "--trace", help="显示 Agent 执行 trace"),
     max_steps: int | None = typer.Option(None, "--max-steps", help="覆盖最大步数"),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="单 Agent chat backend：legacy | langgraph",
+    ),
 ) -> None:
     """单轮对话：发送一个问题，Agent 返回答案."""
     setup_logger()
     cfg = get_config()
 
     llm = create_llm(cfg.llm)
-    loop = AgentLoop(
+    loop = create_chat_runtime(
+        cfg,
         llm=llm,
         max_steps=max_steps or cfg.agent.max_steps,
+        backend=backend,
     )
 
     console.print(
         Panel.fit(
             f"[bold cyan]Provider[/bold cyan]: {cfg.llm.provider}  "
             f"[bold cyan]Model[/bold cyan]: {cfg.llm.model}  "
+            f"[bold cyan]Backend[/bold cyan]: {getattr(loop, 'backend', 'legacy')}  "
             f"[bold cyan]Tools[/bold cyan]: {', '.join(get_registry().list_names())}",
             title="Course Agent",
         )
@@ -155,9 +162,134 @@ def chat(
     console.print(
         Panel.fit(
             result.answer,
-            title=f"[bold green]回答[/bold green]（共 {result.steps} 步）",
+            title=(
+                f"[bold green]回答[/bold green]（共 {result.steps} 步）"
+                f"｜{getattr(result, 'runtime_kind', 'legacy_react')}"
+            ),
         )
     )
+
+
+replay_app = typer.Typer(help="Replay / Trace（Task 015）")
+app.add_typer(replay_app, name="replay")
+
+
+@replay_app.command("latest")
+def replay_latest() -> None:
+    """显示最近一次 replay 文件路径与摘要."""
+    setup_logger()
+    cfg = get_config()
+    from course_agent.runtime.replay import latest_replay_path, load_replay_artifact
+
+    path = latest_replay_path(cfg.runtime.trace_dir)
+    if path is None:
+        console.print("暂无 replay 文件。")
+        raise typer.Exit(code=1)
+    artifact = load_replay_artifact(path)
+    console.print(
+        Panel.fit(
+            f"path={path}\nbackend={artifact.get('backend')}\n"
+            f"runtime={artifact.get('runtime_kind')}\nsteps={artifact.get('steps')}\n"
+            f"final={artifact.get('final_answer_summary', '')}",
+            title="🔁 Latest Replay",
+        )
+    )
+
+
+@replay_app.command("show")
+def replay_show(path: str = typer.Argument(..., help="replay.json 路径")) -> None:
+    """读取并展示指定 replay."""
+    setup_logger()
+    from course_agent.runtime.replay import artifact_to_markdown, load_replay_artifact
+
+    artifact = load_replay_artifact(path)
+    console.print(artifact_to_markdown(artifact))
+
+
+@replay_app.command("export")
+def replay_export(
+    format: str = typer.Option("json", "--format", help="json | md"),
+) -> None:
+    """把最近一次 replay 再导出一份 JSON 或 Markdown."""
+    setup_logger()
+    cfg = get_config()
+    from course_agent.runtime.replay import (
+        export_replay_markdown,
+        latest_replay_path,
+        load_replay_artifact,
+        save_replay_artifact,
+    )
+
+    latest = latest_replay_path(cfg.runtime.trace_dir)
+    if latest is None:
+        console.print("暂无 replay 文件。")
+        raise typer.Exit(code=1)
+    artifact = load_replay_artifact(latest)
+    if format == "md":
+        out = export_replay_markdown(artifact, trace_dir=cfg.runtime.trace_dir)
+    else:
+        out = save_replay_artifact(artifact, trace_dir=cfg.runtime.trace_dir)
+    console.print(str(out))
+
+
+benchmark_app = typer.Typer(help="Benchmark / Compare（Task 015）")
+app.add_typer(benchmark_app, name="benchmark")
+
+
+@benchmark_app.command("runtime")
+def benchmark_runtime(
+    backend: str = typer.Option("langgraph", "--backend", help="legacy | langgraph"),
+    query: str = typer.Option("帮我算一下 (3+5)*2", "--query", help="benchmark query"),
+) -> None:
+    """跑一次单 backend runtime benchmark."""
+    setup_logger()
+    cfg = get_config()
+    from course_agent.runtime.benchmark import run_runtime_benchmark
+
+    row = run_runtime_benchmark(cfg, backend=backend, query=query)
+    table = Table(title=f"Benchmark · {backend}", show_lines=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="white")
+    for key in (
+        "backend",
+        "runtime_kind",
+        "latency_ms",
+        "steps",
+        "tool_calls",
+        "node_count",
+        "replay_path",
+    ):
+        table.add_row(key, str(row.get(key)))
+    console.print(table)
+
+
+@benchmark_app.command("compare")
+def benchmark_compare(
+    query: str = typer.Option("帮我算一下 (3+5)*2", "--query", help="benchmark query"),
+) -> None:
+    """比较 legacy 与 langgraph chat runtime."""
+    setup_logger()
+    cfg = get_config()
+    from course_agent.runtime.benchmark import compare_runtime_benchmarks
+
+    rows = compare_runtime_benchmarks(cfg, query=query)
+    table = Table(title="Runtime Compare", show_lines=False)
+    table.add_column("Backend", style="cyan")
+    table.add_column("Runtime", style="blue")
+    table.add_column("Latency", justify="right")
+    table.add_column("Steps", justify="right")
+    table.add_column("Tool Calls", justify="right")
+    table.add_column("Trace Count", justify="right")
+    for row in rows:
+        table.add_row(
+            row["backend"],
+            row["runtime_kind"],
+            f"{row['latency_ms']}ms",
+            str(row["steps"]),
+            str(row["tool_calls"]),
+            str(row["node_count"]),
+        )
+    console.print(table)
 
 
 @app.command(name="tools")
