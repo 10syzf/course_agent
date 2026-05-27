@@ -34,6 +34,9 @@ _DEFAULT_DB_PATH = Path("~/.cache/course-agent/metrics.db").expanduser()
 _CURRENT_AGENT: contextvars.ContextVar[str] = contextvars.ContextVar(
     "course_agent_current_agent", default="ReAct"
 )
+_CURRENT_RUNTIME_BACKEND: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "course_agent_runtime_backend", default="legacy"
+)
 
 
 def get_db_path() -> Path:
@@ -54,6 +57,7 @@ def ensure_schema() -> Path:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL,
                 agent_name TEXT NOT NULL,
+                runtime_backend TEXT DEFAULT 'legacy',
                 model TEXT NOT NULL,
                 prompt_tokens INTEGER DEFAULT 0,
                 completion_tokens INTEGER DEFAULT 0,
@@ -63,6 +67,13 @@ def ensure_schema() -> Path:
             )
             """
         )
+        cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(metrics)").fetchall()
+        }
+        if "runtime_backend" not in cols:
+            conn.execute(
+                "ALTER TABLE metrics ADD COLUMN runtime_backend TEXT DEFAULT 'legacy'"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS capability_metrics (
@@ -91,8 +102,26 @@ def set_current_agent(name: str) -> contextvars.Token:
     return _CURRENT_AGENT.set(name)
 
 
+def reset_current_agent(token: contextvars.Token) -> None:
+    """重置当前 Agent 名."""
+    _CURRENT_AGENT.reset(token)
+
+
 def get_current_agent() -> str:
     return _CURRENT_AGENT.get()
+
+
+def set_current_runtime_backend(name: str) -> contextvars.Token:
+    return _CURRENT_RUNTIME_BACKEND.set(name)
+
+
+def reset_current_runtime_backend(token: contextvars.Token) -> None:
+    """重置当前 runtime backend."""
+    _CURRENT_RUNTIME_BACKEND.reset(token)
+
+
+def get_current_runtime_backend() -> str:
+    return _CURRENT_RUNTIME_BACKEND.get()
 
 
 @dataclass
@@ -100,6 +129,7 @@ class MetricRecord:
     """一次 LLM 调用的 metric."""
 
     agent_name: str = ""
+    runtime_backend: str = "legacy"
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -129,13 +159,14 @@ def _insert(rec: MetricRecord) -> None:
             conn.execute(
                 """
                 INSERT INTO metrics
-                  (ts, agent_name, model, prompt_tokens, completion_tokens,
+                  (ts, agent_name, runtime_backend, model, prompt_tokens, completion_tokens,
                    latency_ms, status, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     time.time(),
                     rec.agent_name,
+                    rec.runtime_backend,
                     rec.model,
                     int(rec.prompt_tokens or 0),
                     int(rec.completion_tokens or 0),
@@ -189,6 +220,7 @@ def track_llm_call(agent_name: str | None = None, model: str = ""):
     """
     rec = MetricRecord(
         agent_name=agent_name or get_current_agent(),
+        runtime_backend=get_current_runtime_backend(),
         model=model,
         status="ok",
     )
@@ -270,13 +302,15 @@ def aggregate_by_agent(limit: int = 50) -> list[dict[str, Any]]:
     rows = load_recent(limit)
     if not rows:
         return []
-    bucket: dict[str, dict[str, Any]] = {}
+    bucket: dict[tuple[str, str], dict[str, Any]] = {}
     for r in rows:
         a = r["agent_name"] or "unknown"
+        backend = r.get("runtime_backend") or "legacy"
         b = bucket.setdefault(
-            a,
+            (a, backend),
             {
                 "agent_name": a,
+                "runtime_backend": backend,
                 "calls": 0,
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
@@ -299,6 +333,7 @@ def aggregate_by_agent(limit: int = 50) -> list[dict[str, Any]]:
         out.append(
             {
                 "agent_name": b["agent_name"],
+                "runtime_backend": b["runtime_backend"],
                 "calls": b["calls"],
                 "prompt_tokens": b["prompt_tokens"],
                 "completion_tokens": b["completion_tokens"],
@@ -306,7 +341,7 @@ def aggregate_by_agent(limit: int = 50) -> list[dict[str, Any]]:
                 "error_rate": err_rate,
             }
         )
-    out.sort(key=lambda x: x["calls"], reverse=True)
+    out.sort(key=lambda x: (x["calls"], x["agent_name"]), reverse=True)
     return out
 
 
@@ -358,10 +393,14 @@ __all__ = [
     "aggregate_capabilities",
     "ensure_schema",
     "get_current_agent",
+    "get_current_runtime_backend",
     "get_db_path",
     "load_recent",
     "load_recent_capabilities",
+    "reset_current_agent",
+    "reset_current_runtime_backend",
     "set_current_agent",
+    "set_current_runtime_backend",
     "track_capability_call",
     "track_llm_call",
 ]

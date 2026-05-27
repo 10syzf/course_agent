@@ -25,6 +25,9 @@ dependencies = [
     "pypdfium2>=4.0",
     "sqlalchemy>=2.0",
     "aiosqlite>=0.19",
+    "langchain-core>=0.3",
+    "langgraph>=0.2",
+    "langgraph-checkpoint-sqlite>=2.0",
 ]
 
 [project.optional-dependencies]

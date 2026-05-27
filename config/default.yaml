@@ -12,6 +12,11 @@ agent:
   max_steps: 8
   timeout_seconds: 120
 
+runtime:
+  backend: langgraph    # legacy | langgraph
+  checkpoint: memory    # none | memory | sqlite
+  draw_graph: true
+
 mcp:
   enabled: false
   servers:

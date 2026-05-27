@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable
 from typing import Any
 
@@ -14,6 +15,7 @@ from course_agent.config import get_config
 from course_agent.core import AgentLoop
 from course_agent.llm import create_llm
 from course_agent.logger import setup_logger
+from course_agent.runtime import create_runtime
 from course_agent.tools import get_registry
 
 app = typer.Typer(help="Course Agent - 帮助学生完成课程作业的智能 Agent (MVP)")
@@ -216,6 +218,7 @@ def metrics(
                 show_lines=False,
             )
             table.add_column("Agent", style="cyan", no_wrap=True)
+            table.add_column("Backend", style="blue")
             table.add_column("调用数", style="magenta", justify="right")
             table.add_column("Tokens (in/out)", style="yellow", justify="right")
             table.add_column("平均时延", style="green", justify="right")
@@ -223,6 +226,7 @@ def metrics(
             for r in rows:
                 table.add_row(
                     r["agent_name"],
+                    r.get("runtime_backend", "legacy"),
                     str(r["calls"]),
                     f"{r['prompt_tokens']}/{r['completion_tokens']}",
                     f"{r['avg_latency_ms']}ms",
@@ -257,6 +261,7 @@ def metrics(
         t2 = Table(title=f"🧾 原始记录（最近 {len(raw)} 条）", show_lines=False)
         t2.add_column("#", style="dim")
         t2.add_column("Agent", style="cyan")
+        t2.add_column("Backend", style="blue")
         t2.add_column("Model", style="blue")
         t2.add_column("in", justify="right")
         t2.add_column("out", justify="right")
@@ -266,6 +271,7 @@ def metrics(
             t2.add_row(
                 str(i),
                 r["agent_name"],
+                r.get("runtime_backend", "legacy"),
                 r["model"],
                 str(r["prompt_tokens"]),
                 str(r["completion_tokens"]),
@@ -375,6 +381,38 @@ def mcp_list() -> None:
     for r in rows:
         table.add_row(r.name, r.source, r.description[:80])
     console.print(table)
+
+
+@app.command()
+def runtime(
+    backend: str | None = typer.Option(None, "--backend", help="临时覆盖 backend：legacy | langgraph"),
+) -> None:
+    """显示当前 runtime backend / checkpoint / draw_graph 配置."""
+    setup_logger()
+    cfg = copy.deepcopy(get_config())
+    if backend:
+        cfg.runtime.backend = backend.strip().lower()
+    console.print(
+        Panel.fit(
+            f"backend={cfg.runtime.backend}\ncheckpoint={cfg.runtime.checkpoint}\ndraw_graph={cfg.runtime.draw_graph}",
+            title="🕸️ Runtime",
+        )
+    )
+
+
+@app.command()
+def graph(
+    backend: str = typer.Option("langgraph", "--backend", help="导出哪种 runtime 的图，默认 langgraph"),
+) -> None:
+    """导出 Orchestrator graph 的 Mermaid 文本."""
+    setup_logger()
+    cfg = copy.deepcopy(get_config())
+    cfg.runtime.backend = backend.strip().lower()
+    runtime_obj = create_runtime(cfg, enable_capabilities=True)
+    if not hasattr(runtime_obj, "get_graph_mermaid"):
+        console.print("当前 runtime 不支持图导出。")
+        raise typer.Exit(code=1)
+    console.print(runtime_obj.get_graph_mermaid())
 
 
 @app.command()
@@ -783,9 +821,39 @@ def _check_capabilities_and_mcp(cfg: Any) -> tuple[str, str, str]:
         return ("⚠️", type(e).__name__, str(e)[:200])
 
 
+def _check_langgraph_runtime(cfg: Any) -> tuple[str, str, str]:
+    """第 13 项（Task 014）：LangGraph runtime 可导入 / 可实例化 / mock roundtrip / graph 导出."""
+    try:
+        import asyncio as _asyncio
+
+        runtime_cfg = copy.deepcopy(cfg)
+        runtime_cfg.runtime.backend = "langgraph"
+        llm = None
+        if runtime_cfg.llm.provider != "mock" and not runtime_cfg.llm.api_key:
+            runtime_cfg.llm.provider = "mock"
+            llm = create_llm(runtime_cfg.llm)
+        runtime_obj = create_runtime(runtime_cfg, llm=llm, enable_capabilities=True)
+        mermaid = runtime_obj.get_graph_mermaid()
+        if cfg.llm.provider == "mock" or not cfg.llm.api_key:
+            result = _asyncio.run(runtime_obj.arun("请直接回复 hello，不用调任何工具。"))
+            return (
+                "⚠️",
+                f"graph OK ({result.total_llm_calls} calls)",
+                f"provider=mock 或未配 key；Mermaid {len(mermaid)} chars",
+            )
+        result = _asyncio.run(runtime_obj.arun("请直接回复 hello，不用调任何工具。"))
+        return (
+            "✅",
+            f"langgraph roundtrip OK ({result.total_llm_calls} calls)",
+            f"checkpoint={runtime_cfg.runtime.checkpoint}；Mermaid {len(mermaid)} chars",
+        )
+    except Exception as e:  # noqa: BLE001
+        return ("⚠️", type(e).__name__, str(e)[:200])
+
+
 @app.command()
 def doctor() -> None:
-    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools / 错题本+教材库 / 流式+Examiner / 多 Agent / Skill+MCP 十二项检查."""
+    """启动自检：Python / 依赖 / .env / Key / LLM / Embedding / VL / Tools / 错题本+教材库 / 流式+Examiner / 多 Agent / Skill+MCP / LangGraph Runtime 十三项检查."""
     setup_logger()
 
     console.print(Panel.fit("🩺 Course Agent 健康检查", style="bold cyan"))
@@ -805,6 +873,7 @@ def doctor() -> None:
         ("流式 + Examiner Agent", lambda: _check_streaming_and_examiner(cfg)),
         ("多 Agent + Orchestrator", lambda: _check_multi_agent(cfg)),
         ("Skill + MCP 能力层", lambda: _check_capabilities_and_mcp(cfg)),
+        ("LangGraph Runtime", lambda: _check_langgraph_runtime(cfg)),
     ]
 
     table = Table(show_lines=False, header_style="bold magenta")

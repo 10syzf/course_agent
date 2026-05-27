@@ -86,6 +86,67 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
 
 ---
 
+## 🕸️ LangGraph 图式运行时（Task 014）
+
+从 Task 014 起，系统支持 **双运行时架构**：
+- **`legacy`**：原有手写 Orchestrator 运行时
+- **`langgraph`**：基于 LangGraph 的图式运行时（默认）
+
+### 运行时切换
+
+方式 1：临时切换 CLI / UI：
+```bash
+# 查看当前配置
+uv run course-agent runtime
+
+# 临时切换到 langgraph
+uv run course-agent runtime --backend langgraph
+
+# 导出图结构
+uv run course-agent graph
+```
+
+方式 2：永久配置（`config/default.yaml`）：
+```yaml
+runtime:
+  backend: langgraph    # legacy | langgraph
+  checkpoint: memory
+  draw_graph: true
+```
+
+方式 3：环境变量（优先级最高）
+```bash
+RUNTIME_BACKEND=langgraph uv run course-agent ui
+```
+
+### 为什么 LangGraph？
+- **图式编排**：复杂流程（Plan→Solve→Critique→Refine→...）变为可描述、可视化的状态图；
+- **Checkpointing**：支持状态保存与恢复；
+- **Human-in-the-loop**：预留人工介入节点；
+- **Parallel 预留**：为并行子任务执行保留扩展位；
+- **Trace 全链路可观察**：完整图式执行全记录；
+- **可视化**：graph 导出为 Mermaid 图；
+- **生态兼容**：与 LangChain 工具链、LangSmith 追踪平台。
+
+---
+
+## 🔗 LangChain Adapter Layer
+
+Task 014 没有为了接入 LangGraph 而推翻原有抽象，而是先补了一层 **LangChain 兼容适配层**：
+
+- `LLMMessage` <-> LangChain `HumanMessage` / `AIMessage` / `ToolMessage` / `SystemMessage`
+- `BaseLLM` -> `LangChainChatModelAdapter`
+- `ToolRegistry` -> LangChain `StructuredTool`
+- `CapabilityRegistry` -> LangChain Tool 视图
+
+这样做的好处是：
+
+- **保留稳定接口**：Task 008~013 已验证过的 `BaseLLM`、Tool、Capability 不需要整体重写；
+- **让 LangGraph 可渐进接入**：先迁 runtime，再逐步迁更深层的 AgentLoop / memory / tracing；
+- **方便后续生态扩展**：后面接 LangChain Runnable、LangSmith tracing 时，不必再重做一遍消息和工具桥接。
+
+---
+
 ## ✅ 当前进度
 
 | 里程碑 | 状态 | 内容 |
@@ -100,6 +161,7 @@ Step 2 ✍️ LLM 基于工具返回组织最终答案
 | **Task 011 · 让 Agent「答得顺」+「考得出」** | ✅ | **真流式输出（`StreamChunk` + `BaseLLM.astream()` + `AgentLoop.astream_run()` + Chainlit 打字机）+ 题目生成器 `generate_question`（基于错题本+教材 RAG，结构化 JSON）+ Examiner Agent（限定工具集 + 极简自动 grader，多 Agent 编排第一块砖）+ doctor 第 10 项流式+Examiner 探活** |
 | **Task 012 · 让 Agent「分工合作」+「看得见账」** | ✅ | **多 Agent 编排（Planner / Solver / Critic / Orchestrator 四角分工，Plan→Solve→Critique→Refine 闭环，硬上限 30 LLM 调用）+ 可观测面板（SQLite metrics + `track_llm_call` + `course-agent metrics` 表格）+ Chainlit 数据层持久化（SQLAlchemy + aiosqlite，关闭浏览器历史不丢）+ Examiner 判分委托给 CriticAgent + doctor 第 11 项多 Agent 探活** |
 | **Task 013 · 让 Agent「会借外脑」** | ✅ | **统一 Capability Layer（`internal_tool / skill / mcp`）+ Local Skill Runtime（`study_plan_skill` / `quiz_from_notes_skill`）+ MCP Adapter（mock-first，可选开启）+ Capability Router + capability metrics + CLI `capabilities/skills list/mcp list` + doctor 第 12 项 Skill/MCP 探活 + Chainlit Step 显示 `Tool / Skill / MCP` 来源** |
+| **Task 014 · 让 Agent「运行在图上」** | ✅ | **LangGraph 图式运行时（双运行时架构 legacy/langgraph，可配置切换）+ LangChain Adapter Layer + `RuntimeConfig` + CLI `runtime/graph` 命令 + doctor 第 13 项 LangGraph 探活 + metrics 增加 `runtime_backend` 维度 + 默认 runtime 配置为 langgraph + Mermaid 图导出 + 新增 50 个测试用例** |
 | Milestone 3 · 多 Agent 编排 | ✅ | Planner / Solver / Critic / Orchestrator 四角分工 + Refine 闭环（Task 012）|
 
 ---
@@ -744,7 +806,7 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：**307 passed + 6 skipped**（live tests 默认跳过；Task 013 在 Task 012 的基础上再新增 54 项：6 capability_base + 6 capability_registry + 8 skill_runtime + 6 skill_builtin + 8 mcp_adapter + 6 capability_router + 5 cli_capabilities + 4 cli_doctor_12 + 5 orchestrator_capabilities）。
+**当前测试状态**：**357 passed + 6 skipped**（live tests 默认跳过；Task 014 在原有 307 个基线用例上新增 50 个回归测试，覆盖 runtime backend、LangGraph orchestrator、LangChain adapter、CLI runtime/doctor、metrics backend 和 Chainlit runtime 切换）。
 
 ---
 
@@ -1056,6 +1118,22 @@ course_agent/
 │   ├── solver.py         # ✅ Task 012：SolverAgent（执行单个 sub_task，全工具集）
 │   ├── critic.py         # ✅ Task 012：CriticAgent（独立评审，工具白名单仅 kb_search，输出 {score, pass, feedback}）
 │   └── orchestrator.py   # ✅ Task 012：Orchestrator（Plan→Solve→Critique→Refine 闭环；硬上限 30 LLM 调用）
+├── runtime/              # ✅ Task 014：统一运行时入口（legacy / langgraph）
+│   ├── __init__.py       # create_runtime 统一导出
+│   ├── backend.py        # backend 选择器
+│   ├── legacy_runtime.py # 兼容旧 Orchestrator 的薄封装
+│   ├── langgraph_runtime.py
+│   │                     # LangGraph Runtime（checkpoint / graph invoke / mermaid）
+│   ├── langchain_adapters.py
+│   │                     # BaseLLM / Tool / Capability 到 LangChain 的桥接层
+│   └── state.py          # GraphRuntimeState / state_to_result / trace helper
+├── graph/                # ✅ Task 014：LangGraph 节点、边与图构建
+│   ├── __init__.py
+│   ├── orchestrator_graph.py
+│   │                     # Planner→Solver→Critic→Refine 图构建
+│   ├── nodes.py          # 节点实现
+│   ├── edges.py          # 条件边判定
+│   └── prompts.py        # Mermaid fallback / 图常量
 ├── capabilities/         # ✅ Task 013：统一能力层（internal_tool / skill / mcp）
 │   ├── base.py           # CapabilityKind / CapabilitySpec / CapabilityCallResult / BaseCapabilityProvider
 │   ├── registry.py       # CapabilityRegistry
@@ -1071,14 +1149,14 @@ course_agent/
 │   └── mock_server.py    # 离线可测的 mock MCP tools
 ├── observability/        # ✅ Task 012：可观测性（SQLite metrics）
 │   ├── __init__.py
-│   └── metrics.py        # Task 012/013：LLM + capability metrics，支持 aggregate_by_agent / aggregate_capabilities
+│   └── metrics.py        # Task 012/013/014：LLM + capability metrics，支持 runtime_backend 维度
 ├── context/              # 🔜 Prompt 模板 / 上下文压缩
 ├── orchestrator/         # ⛔ 改在 agent/orchestrator.py（保留空目录占位以兼容旧 import 路径）
 ├── config.py             # Pydantic 配置 + .env 加载
 ├── logger.py             # loguru 包装
 └── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / doctor / metrics / capabilities / skills / mcp）
 
-tests/                    # 307 passed + 6 skipped：在 Task 012 基础上新增 capability / skill / mcp / router / cli / orchestrator_capabilities 测试
+tests/                    # 357 passed + 6 skipped：新增 Task 014 runtime / graph / adapters / CLI / Chainlit 回归测试
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页

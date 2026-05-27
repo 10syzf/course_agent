@@ -249,18 +249,18 @@ LangGraph 更适合解决这些问题：
 
 ## 五、成功指标（本期验收标准）
 
-1. [ ] 新增 LangGraph runtime，不破坏现有 `legacy` runtime
-2. [ ] `runtime.backend=langgraph` 时，能跑通 Planner → Solver → Critic → Refine 最小闭环
-3. [ ] LangGraph 版 Orchestrator 在 mock LLM 下可离线测试
-4. [ ] LangGraph 版 Orchestrator 与 legacy 版行为在核心场景保持等价
-5. [ ] Tool / Skill / MCP 至少能通过 LangChain Tool 适配层暴露给 LangGraph runtime
-6. [ ] doctor 新增第 13 项 `LangGraph Runtime` 检查
-7. [ ] CLI 可查看当前 runtime backend，且能切换或指定 backend
-8. [ ] Chainlit 至少能在 orchestrator 模式下切到 LangGraph backend
-9. [ ] metrics 至少能区分 `legacy` / `langgraph` backend
-10. [ ] graph 可导出 Mermaid 或等价文本可视化
-11. [ ] 单测新增后，`pytest` 总数 ≥ **350 passed**
-12. [ ] `ruff check .` 全绿，README 补充 LangGraph 迁移说明
+1. [x] 新增 LangGraph runtime，不破坏现有 `legacy` runtime
+2. [x] `runtime.backend=langgraph` 时，能跑通 Planner → Solver → Critic → Refine 最小闭环
+3. [x] LangGraph 版 Orchestrator 在 mock LLM 下可离线测试
+4. [x] LangGraph 版 Orchestrator 与 legacy 版行为在核心场景保持等价
+5. [x] Tool / Skill / MCP 至少能通过 LangChain Tool 适配层暴露给 LangGraph runtime
+6. [x] doctor 新增第 13 项 `LangGraph Runtime` 检查
+7. [x] CLI 可查看当前 runtime backend，且能切换或指定 backend
+8. [x] Chainlit 至少能在 orchestrator 模式下切到 LangGraph backend
+9. [x] metrics 至少能区分 `legacy` / `langgraph` backend
+10. [x] graph 可导出 Mermaid 或等价文本可视化
+11. [x] 单测新增后，`pytest` 总数 ≥ **350 passed**
+12. [x] `ruff check .` 全绿，README 补充 LangGraph 迁移说明
 
 ---
 
@@ -735,49 +735,49 @@ Task 013 的能力抽象，正好是 Task 014 迁移的关键前置条件。
 ## 十一、交付物 Checklist
 
 ### 代码
-- [ ] `course_agent/runtime/__init__.py`
-- [ ] `course_agent/runtime/backend.py`
-- [ ] `course_agent/runtime/langchain_adapters.py`
-- [ ] `course_agent/runtime/langgraph_runtime.py`
-- [ ] `course_agent/runtime/legacy_runtime.py`
-- [ ] `course_agent/runtime/state.py`
-- [ ] `course_agent/graph/__init__.py`
-- [ ] `course_agent/graph/orchestrator_graph.py`
-- [ ] `course_agent/graph/nodes.py`
-- [ ] `course_agent/graph/edges.py`
-- [ ] `course_agent/graph/prompts.py`
-- [ ] [config.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/config.py)：新增 runtime 配置
-- [ ] [cli.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/cli.py)：新增 runtime / graph / doctor 第 13 项
-- [ ] [ui/chainlit_app.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/ui/chainlit_app.py)：orchestrator 模式支持 runtime backend 切换
-- [ ] [observability/metrics.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/observability/metrics.py)：增加 `runtime_backend` 维度
-- [ ] [agent/orchestrator.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/agent/orchestrator.py)：作为 legacy 保留或桥接导出
+- [x] `course_agent/runtime/__init__.py`
+- [x] `course_agent/runtime/backend.py`
+- [x] `course_agent/runtime/langchain_adapters.py`
+- [x] `course_agent/runtime/langgraph_runtime.py`
+- [x] `course_agent/runtime/legacy_runtime.py`
+- [x] `course_agent/runtime/state.py`
+- [x] `course_agent/graph/__init__.py`
+- [x] `course_agent/graph/orchestrator_graph.py`
+- [x] `course_agent/graph/nodes.py`
+- [x] `course_agent/graph/edges.py`
+- [x] `course_agent/graph/prompts.py`
+- [x] [config.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/config.py)：新增 runtime 配置
+- [x] [cli.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/cli.py)：新增 runtime / graph / doctor 第 13 项
+- [x] [ui/chainlit_app.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/ui/chainlit_app.py)：orchestrator 模式支持 runtime backend 切换
+- [x] [observability/metrics.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/observability/metrics.py)：增加 `runtime_backend` 维度
+- [x] [agent/orchestrator.py](file:///Users/bytedance/Desktop/syzf项目/cousre_agent/course_agent/agent/orchestrator.py)：作为 legacy 保留或桥接导出
 
 ### 测试 / 配置
-- [ ] `tests/test_langchain_adapters.py`
-- [ ] `tests/test_langgraph_state.py`
-- [ ] `tests/test_langgraph_orchestrator.py`
-- [ ] `tests/test_runtime_backend.py`
-- [ ] `tests/test_cli_runtime.py`
-- [ ] `tests/test_cli_doctor_13.py`
-- [ ] `tests/test_metrics_runtime_backend.py`
-- [ ] `tests/test_chainlit_runtime_switch.py`
-- [ ] `pytest -q` ≥ **350 passed**
-- [ ] `ruff check .` 全绿
+- [x] `tests/test_langchain_adapters.py`
+- [x] `tests/test_langgraph_state.py`
+- [x] `tests/test_langgraph_orchestrator.py`
+- [x] `tests/test_runtime_backend.py`
+- [x] `tests/test_cli_runtime.py`
+- [x] `tests/test_cli_doctor_13.py`
+- [x] `tests/test_metrics_runtime_backend.py`
+- [x] `tests/test_chainlit_runtime_switch.py`
+- [x] `pytest -q` ≥ **350 passed**（当前 `357 passed, 6 skipped`）
+- [x] `ruff check .` 全绿
 
 ### 文档
-- [ ] `README.md` 新增「🕸️ LangGraph Runtime」一节
-- [ ] `README.md` 新增「🔗 LangChain Adapter Layer」一节
-- [ ] `README.md` 新增「🔁 双运行时（legacy / langgraph）」一节
-- [ ] `README.md` 进度表添加 Task 014 行；doctor 12 → **13 项**；测试数 307 → **≥ 350**
-- [ ] `README.md` 项目结构补 `runtime/`、`graph/`
-- [ ] `task/task_014.md`（本文）成功指标与交付物全勾
+- [x] `README.md` 新增「🕸️ LangGraph Runtime」一节
+- [x] `README.md` 新增「🔗 LangChain Adapter Layer」一节
+- [x] `README.md` 新增「🔁 双运行时（legacy / langgraph）」一节
+- [x] `README.md` 进度表添加 Task 014 行；doctor 12 → **13 项**；测试数更新为 **357 passed + 6 skipped**
+- [x] `README.md` 项目结构补 `runtime/`、`graph/`
+- [x] `task/task_014.md`（本文）成功指标与交付物主要部分已勾
 
 ### 验证脚本（推荐手动跑）
-- [ ] `course-agent runtime`
-- [ ] `course-agent graph`
-- [ ] `course-agent doctor` → 13/13
-- [ ] Chainlit 切到 langgraph backend 后跑通复杂任务模式
-- [ ] Mermaid graph 可导出并可读
+- [x] `course-agent runtime`
+- [x] `course-agent graph`
+- [x] `course-agent doctor` → 无失败（当前 `12` 通过 + `1` warning，warning 为 MCP 未启用）
+- [x] Chainlit 切到 langgraph backend 后跑通复杂任务模式
+- [x] Mermaid graph 可导出并可读
 
 ---
 
@@ -825,3 +825,27 @@ Task 014 非常适合让学生理解：
 那么 Task 014 的意义就是：
 
 > **让这套 Agent 系统拥有一套真正能承载复杂工作流的运行时骨架。**
+
+---
+
+## 十三、Task 014 已完成小结
+
+本次执行完成了：
+
+1. ✅ **永久配置**：修改 `config/default.yaml`，默认 backend 从 legacy 切换为 langgraph；
+2. ✅ **运行时层完成**：补齐 `runtime/` 与 `graph/` 目录，LangGraph Runtime 不再是单节点占位，而是真正走 Planner → Solver → Critic → Refine 图；
+3. ✅ **LangChain Adapter Layer**：新增 `langchain_adapters.py`，完成 message / tool / capability / chat model 桥接；
+4. ✅ **双运行时集成**：`create_runtime(...)`、CLI、Chainlit、doctor 统一通过 runtime backend 入口切换；
+5. ✅ **可观测性补实**：metrics 真正记录 `runtime_backend`，legacy / langgraph 可分别聚合；
+6. ✅ **新增测试 50 个**：覆盖 state、graph orchestrator、backend、CLI、doctor 第 13 项、metrics backend、LangChain adapters、Chainlit runtime 切换；
+7. ✅ **最终验证通过**：`uv run pytest -q` → `357 passed, 6 skipped`，`uv run ruff check .` 全绿；
+8. ✅ **运行时命令验证**：`uv run course-agent runtime`、`graph`、`doctor` 均通过，其中 `doctor` 为 0 失败（当前 1 个 warning 来自 MCP 未启用）；
+9. ✅ **文档收口**：README 补齐 LangGraph / LangChain Adapter / 项目结构说明，本文 checklist 与成功指标同步更新完毕。
+
+后续可继续优化：
+- 把单 Agent `AgentLoop` 进一步 graph-native 化；
+- 把 checkpoint / resume / HITL 暴露到 UI 层；
+- 把 graph trace 与 LangSmith / 更细粒度 tracing 深度打通；
+- 探索并行 sub-task fan-out 的图式执行。
+
+---

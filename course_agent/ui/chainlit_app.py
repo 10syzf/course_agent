@@ -8,7 +8,7 @@ from pathlib import Path
 import chainlit as cl
 from chainlit.input_widget import Slider, Switch, TextInput
 
-from course_agent.agent import ExaminerAgent, Orchestrator
+from course_agent.agent import ExaminerAgent
 from course_agent.capabilities.adapters import build_default_capability_registry
 from course_agent.config import get_config
 from course_agent.core import AgentLoop
@@ -22,6 +22,7 @@ from course_agent.memory import (
     create_embedder,
 )
 from course_agent.memory.tools import set_active_manager
+from course_agent.runtime import create_runtime
 from course_agent.tools import get_registry
 from course_agent.ui.adapters import ChainlitCallbacks
 
@@ -373,10 +374,9 @@ async def on_scene_action(action: cl.Action) -> None:
     if scene == "orchestrator":
         try:
             llm = create_llm(cfg.llm)
-            orchestrator = Orchestrator(
+            orchestrator = create_runtime(
+                cfg,
                 llm=llm,
-                solver_max_steps=cfg.agent.max_steps,
-                mcp_cfg=cfg.mcp,
                 enable_capabilities=True,
             )
         except Exception as e:  # noqa: BLE001
@@ -405,7 +405,7 @@ async def on_scene_action(action: cl.Action) -> None:
         await cl.Message(
             content=(
                 "✅ 已切换到 **🧩 复杂任务模式（Orchestrator）**\n\n"
-                "我会按 **Plan → Solve → Critique → Refine** 的闭环处理你的任务，"
+                f"当前 backend：`{cfg.runtime.backend}`。我会按 **Plan → Solve → Critique → Refine** 的闭环处理你的任务，"
                 "适合多步骤、多工具协作的复杂作业。\n\n"
                 "你可以直接描述任务，例如「帮我写一份关于快速排序的报告，包含原理、代码和复杂度分析」。"
             ),
@@ -476,7 +476,14 @@ async def on_settings_update(settings: dict) -> None:
         system_prompt = _SCENE_PROMPTS[scene][1]
 
     try:
-        agent = _build_agent(cfg, system_prompt=system_prompt)
+        if scene == "orchestrator":
+            llm = create_llm(cfg.llm)
+            agent = create_runtime(cfg, llm=llm, enable_capabilities=True)
+        elif scene == "examiner":
+            llm = create_llm(cfg.llm)
+            agent = ExaminerAgent(llm=llm, max_steps=cfg.agent.max_steps)
+        else:
+            agent = _build_agent(cfg, system_prompt=system_prompt)
     except Exception as e:  # noqa: BLE001
         await cl.Message(
             content=f"❌ 应用设置失败：{e}", author="System"
@@ -486,11 +493,15 @@ async def on_settings_update(settings: dict) -> None:
     # 处理长期记忆开关变化
     memory: MemoryManager | None = cl.user_session.get("memory")
     persist_dir = Path(cl.user_session.get("persist_dir") or "data/memory/default")
+    current_llm = getattr(agent, "llm", None)
+    if current_llm is None and hasattr(agent, "orchestrator"):
+        current_llm = getattr(agent.orchestrator, "solver", None)
+        current_llm = getattr(current_llm, "llm", None)
     if memory is None or (memory_enabled != (memory.long is not None)):
-        memory = _build_memory(agent.llm, enable_long=memory_enabled, persist_dir=persist_dir)
+        memory = _build_memory(current_llm, enable_long=memory_enabled, persist_dir=persist_dir)
     else:
         # 仅替换 LLM（用于摘要压缩）
-        memory.short.llm = agent.llm
+        memory.short.llm = current_llm
     set_active_manager(memory)
 
     cl.user_session.set("cfg", cfg)
@@ -515,7 +526,7 @@ async def on_settings_update(settings: dict) -> None:
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     """处理用户发送的消息（带记忆增强 + Task 009 图片上传）."""
-    agent: AgentLoop | None = cl.user_session.get("agent")
+    agent = cl.user_session.get("agent")
     history_raw: list[dict] = cl.user_session.get("history") or []
     memory: MemoryManager | None = cl.user_session.get("memory")
 
@@ -603,9 +614,7 @@ async def on_message(message: cl.Message) -> None:
     callbacks = ChainlitCallbacks(capability_specs=cap_specs)
 
     # Task 012：复杂任务模式（Orchestrator）—— Plan→Solve→Critique→Refine
-    if cl.user_session.get("agent_mode") == "orchestrator" and isinstance(
-        agent, Orchestrator
-    ):
+    if cl.user_session.get("agent_mode") == "orchestrator" and hasattr(agent, "arun"):
         try:
             result = await agent.arun(user_text, callbacks=callbacks)
         except Exception as e:  # noqa: BLE001
@@ -617,8 +626,9 @@ async def on_message(message: cl.Message) -> None:
             return
 
         # 主答案
+        backend = getattr(agent, "backend", (cl.user_session.get("cfg") or get_config()).runtime.backend)
         await cl.Message(
-            content=result.final_answer, author="Orchestrator"
+            content=result.final_answer, author=f"Orchestrator/{backend}"
         ).send()
 
         # Step 卡片：Plan + 每个 sub-task

@@ -26,6 +26,12 @@ class AgentConfig(BaseModel):
     timeout_seconds: int = 120
 
 
+class RuntimeConfig(BaseModel):
+    backend: str = "legacy"
+    checkpoint: str = "memory"
+    draw_graph: bool = True
+
+
 class LoggingConfig(BaseModel):
     level: str = "INFO"
 
@@ -42,6 +48,7 @@ class AppConfig(BaseSettings):
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
@@ -97,6 +104,19 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
     if os.getenv("AGENT_LOG_LEVEL"):
         logging_data["level"] = os.getenv("AGENT_LOG_LEVEL")
 
+    runtime_data = data.get("runtime", {})
+    if os.getenv("RUNTIME_BACKEND"):
+        runtime_data["backend"] = os.getenv("RUNTIME_BACKEND")
+    if os.getenv("RUNTIME_CHECKPOINT"):
+        runtime_data["checkpoint"] = os.getenv("RUNTIME_CHECKPOINT")
+    if os.getenv("RUNTIME_DRAW_GRAPH"):
+        runtime_data["draw_graph"] = os.getenv("RUNTIME_DRAW_GRAPH", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
     mcp_data = data.get("mcp", {})
     if os.getenv("MCP_ENABLED"):
         mcp_data["enabled"] = os.getenv("MCP_ENABLED", "").lower() in {
@@ -109,6 +129,7 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
     return AppConfig(
         llm=LLMConfig(**llm_data),
         agent=AgentConfig(**agent_data),
+        runtime=RuntimeConfig(**runtime_data),
         mcp=MCPConfig(**mcp_data),
         logging=LoggingConfig(**logging_data),
     )
