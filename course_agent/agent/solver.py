@@ -95,6 +95,7 @@ class SolverAgent:
             registry=runtime_registry,
             max_steps=max_steps,
             system_prompt=system_prompt or SOLVER_SYSTEM_PROMPT,
+            prompt_role="solver",
         )
 
     @property

@@ -7,6 +7,11 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from course_agent.graph.human_nodes import (
+    decide_human_gate,
+    wait_approval_node,
+    wait_human_input_node,
+)
 from course_agent.graph.react_nodes import (
     finalize_node,
     llm_node,
@@ -31,6 +36,10 @@ class ReactGraphState(TypedDict, total=False):
     runtime_kind: str
     trace: list[dict[str, Any]]
     done: bool
+    status: str
+    waiting_reason: str
+    session_id: str
+    resume_input: str
 
 
 def make_initial_react_state(
@@ -39,6 +48,8 @@ def make_initial_react_state(
     messages: list[dict[str, Any]],
     max_steps: int,
     backend: str = "langgraph",
+    session_id: str | None = None,
+    resume_input: str | None = None,
 ) -> ReactGraphState:
     """构造 react graph 初始状态."""
     return ReactGraphState(
@@ -51,6 +62,10 @@ def make_initial_react_state(
         max_steps=max_steps,
         backend=backend,
         runtime_kind="react_graph",
+        status="running",
+        waiting_reason="",
+        session_id=session_id or "",
+        resume_input=resume_input or "",
         trace=append_graph_trace(
             [],
             node="start",
@@ -93,13 +108,29 @@ def build_react_graph(
     async def _finalize(state: ReactGraphState) -> dict[str, Any]:
         return await finalize_node(state)
 
+    async def _wait_human_input(state: ReactGraphState) -> dict[str, Any]:
+        return await wait_human_input_node(state)
+
+    async def _wait_approval(state: ReactGraphState) -> dict[str, Any]:
+        return await wait_approval_node(state)
+
     graph.add_node("prepare_context", _prepare_context)
+    graph.add_node("wait_human_input", _wait_human_input)
+    graph.add_node("wait_approval", _wait_approval)
     graph.add_node("llm", _llm)
     graph.add_node("tool", _tool)
     graph.add_node("finalize", _finalize)
 
     graph.add_edge(START, "prepare_context")
-    graph.add_edge("prepare_context", "llm")
+    graph.add_conditional_edges(
+        "prepare_context",
+        decide_human_gate,
+        {
+            "llm": "llm",
+            "wait_human_input": "wait_human_input",
+            "wait_approval": "wait_approval",
+        },
+    )
     graph.add_conditional_edges(
         "llm",
         _after_llm,
@@ -117,6 +148,8 @@ def build_react_graph(
         },
     )
     graph.add_edge("finalize", END)
+    graph.add_edge("wait_human_input", END)
+    graph.add_edge("wait_approval", END)
     return graph.compile()
 
 

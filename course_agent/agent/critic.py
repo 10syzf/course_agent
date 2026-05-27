@@ -110,6 +110,7 @@ class CriticAgent:
             tool_names=tool_names,
             max_steps=max_steps,
             system_prompt=CRITIC_SYSTEM_PROMPT,
+            prompt_role="critic",
         )
 
     @property

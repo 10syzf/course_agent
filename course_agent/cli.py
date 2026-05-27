@@ -14,7 +14,19 @@ from rich.table import Table
 from course_agent.config import get_config
 from course_agent.llm import create_llm
 from course_agent.logger import setup_logger
-from course_agent.runtime import create_chat_runtime, create_runtime
+from course_agent.prompt import (
+    compile_prompt,
+    latest_prompt_path,
+    load_prompt_artifact,
+    profile_prompt,
+    prompt_to_markdown,
+    save_prompt_artifact,
+)
+from course_agent.runtime import (
+    create_chat_runtime,
+    create_runtime,
+    create_session_runtime,
+)
 from course_agent.tools import get_registry
 
 app = typer.Typer(help="Course Agent - 帮助学生完成课程作业的智能 Agent (MVP)")
@@ -235,6 +247,12 @@ def replay_export(
 benchmark_app = typer.Typer(help="Benchmark / Compare（Task 015）")
 app.add_typer(benchmark_app, name="benchmark")
 
+session_app = typer.Typer(help="Session / Resume（Task 016）")
+app.add_typer(session_app, name="session")
+
+prompt_app = typer.Typer(help="Prompt Inspect / Profile（Task 017）")
+app.add_typer(prompt_app, name="prompt")
+
 
 @benchmark_app.command("runtime")
 def benchmark_runtime(
@@ -289,6 +307,228 @@ def benchmark_compare(
             str(row["tool_calls"]),
             str(row["node_count"]),
         )
+    console.print(table)
+
+
+def _session_runtime():
+    cfg = get_config()
+    llm = create_llm(cfg.llm)
+    return create_session_runtime(
+        cfg,
+        llm=llm,
+        backend="langgraph",
+    )
+
+
+def _print_session_detail(session) -> None:
+    status = getattr(getattr(session, "status", None), "value", session.status)
+    console.print(
+        Panel.fit(
+            f"session_id={session.session_id}\n"
+            f"title={session.title}\n"
+            f"status={status}\n"
+            f"runtime={session.runtime_kind}\n"
+            f"backend={session.backend}\n"
+            f"waiting_reason={session.waiting_reason or '-'}\n"
+            f"replay={session.latest_replay_path or '-'}\n"
+            f"answer={session.latest_answer or '-'}",
+            title="Session Detail",
+        )
+    )
+
+
+@session_app.command("start")
+def session_start(
+    query: str = typer.Argument(..., help="要启动的任务"),
+) -> None:
+    """创建并运行一个 stateful session."""
+    setup_logger()
+    import asyncio
+
+    runtime = _session_runtime()
+    result = asyncio.run(runtime.start(query))
+    _print_session_detail(result.session)
+
+
+@session_app.command("list")
+def session_list() -> None:
+    """列出全部 session."""
+    setup_logger()
+    runtime = _session_runtime()
+    rows = runtime.list_sessions()
+    if not rows:
+        console.print("暂无 session。")
+        return
+    table = Table(title="Sessions", show_lines=False)
+    table.add_column("ID", style="cyan")
+    table.add_column("Status", style="yellow")
+    table.add_column("Title", style="white")
+    table.add_column("Updated", style="green")
+    for row in rows:
+        table.add_row(
+            row.session_id,
+            row.status.value if hasattr(row.status, "value") else str(row.status),
+            row.title,
+            row.updated_at,
+        )
+    console.print(table)
+
+
+@session_app.command("show")
+def session_show(
+    session_id: str = typer.Argument(..., help="session id"),
+) -> None:
+    """查看某个 session 详情."""
+    setup_logger()
+    runtime = _session_runtime()
+    session = runtime.get_session(session_id)
+    if session is None:
+        console.print("session 不存在。")
+        raise typer.Exit(code=1)
+    _print_session_detail(session)
+
+
+@session_app.command("resume")
+def session_resume(
+    session_id: str = typer.Argument(..., help="session id"),
+) -> None:
+    """恢复一个等待审批的 session."""
+    setup_logger()
+    import asyncio
+
+    runtime = _session_runtime()
+    try:
+        result = asyncio.run(runtime.resume(session_id))
+    except Exception as e:  # noqa: BLE001
+        console.print(f"resume 失败：{e}")
+        raise typer.Exit(code=1) from e
+    _print_session_detail(result.session)
+
+
+@session_app.command("continue")
+def session_continue(
+    session_id: str = typer.Argument(..., help="session id"),
+    user_input: str = typer.Option(..., "--input", help="补充信息"),
+) -> None:
+    """给 waiting session 追加人工输入后继续."""
+    setup_logger()
+    import asyncio
+
+    runtime = _session_runtime()
+    try:
+        result = asyncio.run(runtime.continue_session(session_id, user_input))
+    except Exception as e:  # noqa: BLE001
+        console.print(f"continue 失败：{e}")
+        raise typer.Exit(code=1) from e
+    _print_session_detail(result.session)
+
+
+@session_app.command("cancel")
+def session_cancel(
+    session_id: str = typer.Argument(..., help="session id"),
+) -> None:
+    """取消一个 session."""
+    setup_logger()
+    runtime = _session_runtime()
+    try:
+        session = runtime.cancel(session_id)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"cancel 失败：{e}")
+        raise typer.Exit(code=1) from e
+    _print_session_detail(session)
+
+
+def _resolve_role_prompt(role: str) -> str:
+    role = role.strip().lower()
+    if role == "planner":
+        from course_agent.agent.planner import PLANNER_SYSTEM_PROMPT
+
+        return PLANNER_SYSTEM_PROMPT
+    if role == "solver":
+        from course_agent.agent.solver import SOLVER_SYSTEM_PROMPT
+
+        return SOLVER_SYSTEM_PROMPT
+    if role == "critic":
+        from course_agent.agent.critic import CRITIC_SYSTEM_PROMPT
+
+        return CRITIC_SYSTEM_PROMPT
+    if role == "examiner":
+        from course_agent.agent.examiner import EXAMINER_SYSTEM_PROMPT
+
+        return EXAMINER_SYSTEM_PROMPT
+    return "你是 Course Agent，一个帮助学生完成课程作业的智能助手。"
+
+
+def _build_prompt_envelope_for_cli(role: str, query: str):
+    cfg = get_config()
+    return compile_prompt(
+        role=role,
+        role_prompt=_resolve_role_prompt(role),
+        user_input=query,
+        mcp_notes={"enabled": cfg.mcp.enabled},
+        task_notes={"source": "cli_prompt_command"},
+    )
+
+
+@prompt_app.command("inspect")
+def prompt_inspect(
+    role: str = typer.Option("react", "--role", help="react | planner | solver | critic | examiner"),
+    query: str = typer.Option("你好，请介绍一下你的能力", "--query", help="本次要编译的 query"),
+) -> None:
+    """查看当前完整 prompt 与分层内容."""
+    setup_logger()
+    cfg = get_config()
+    envelope = _build_prompt_envelope_for_cli(role, query)
+    path = save_prompt_artifact(envelope, prompt_dir=cfg.runtime.prompt_dir)
+    console.print(
+        Panel.fit(
+            f"role={envelope.role}\n"
+            f"static_hash={envelope.static_hash}\n"
+            f"dynamic_hash={envelope.dynamic_hash}\n"
+            f"path={path}",
+            title="Prompt Inspect",
+        )
+    )
+    console.print("## Static Prefix\n")
+    console.print(envelope.static_prefix)
+    console.print("\n## Dynamic Tail\n")
+    console.print(envelope.dynamic_tail)
+
+
+@prompt_app.command("latest")
+def prompt_latest() -> None:
+    """查看最近一次 prompt artifact."""
+    setup_logger()
+    cfg = get_config()
+    path = latest_prompt_path(cfg.runtime.prompt_dir)
+    if path is None:
+        console.print("暂无 prompt artifact。")
+        raise typer.Exit(code=1)
+    envelope = load_prompt_artifact(path)
+    console.print(prompt_to_markdown(envelope))
+
+
+@prompt_app.command("profile")
+def prompt_profile(
+    role: str = typer.Option("react", "--role", help="react | planner | solver | critic | examiner"),
+    query: str = typer.Option("你好，请介绍一下你的能力", "--query", help="本次要编译的 query"),
+) -> None:
+    """输出 static / dynamic prompt 占比."""
+    setup_logger()
+    envelope = _build_prompt_envelope_for_cli(role, query)
+    row = profile_prompt(envelope)
+    table = Table(title=f"Prompt Profile · {role}", show_lines=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="white")
+    for key in (
+        "role",
+        "static_chars",
+        "dynamic_chars",
+        "full_chars",
+        "static_ratio",
+        "dynamic_ratio",
+    ):
+        table.add_row(key, str(row[key]))
     console.print(table)
 
 

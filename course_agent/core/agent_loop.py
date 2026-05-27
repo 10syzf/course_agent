@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -12,6 +13,7 @@ from pydantic import BaseModel
 from course_agent.core.state import AgentCallbacks, AgentState
 from course_agent.llm.base import BaseLLM, LLMMessage, StreamChunk, ToolCall
 from course_agent.logger import get_logger
+from course_agent.prompt import PromptEnvelope, compile_prompt, save_prompt_artifact
 from course_agent.tools.registry import ToolRegistry, get_registry
 
 _DEFAULT_SYSTEM_PROMPT = (
@@ -30,6 +32,7 @@ class AgentResult(BaseModel):
     answer: str
     steps: int
     trace: list[dict[str, Any]]
+    prompt_artifact_path: str | None = None
 
 
 class AgentLoop:
@@ -45,17 +48,61 @@ class AgentLoop:
         tool_names: list[str] | None = None,
         max_steps: int = 8,
         system_prompt: str | None = None,
+        prompt_role: str = "react",
+        prompt_dir: str = "data/prompts",
     ) -> None:
         self.llm = llm
         self.registry = registry or get_registry()
         self.tool_names = tool_names or self.registry.list_names()
         self.max_steps = max_steps
         self.system_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
+        self.prompt_role = prompt_role
+        self.prompt_dir = prompt_dir
+        self.project_root = Path.cwd()
+        self._last_prompt: PromptEnvelope | None = None
+        self._last_prompt_artifact_path: str | None = None
         self.log = get_logger("AgentLoop")
+
+    def _build_prompt_envelope(
+        self,
+        *,
+        user_input: str,
+        history: list[LLMMessage] | None = None,
+        task_notes: dict[str, Any] | None = None,
+    ) -> PromptEnvelope:
+        envelope = compile_prompt(
+            role=self.prompt_role,
+            role_prompt=self.system_prompt,
+            user_input=user_input,
+            history_count=len(history or []),
+            project_root=self.project_root,
+            task_notes=task_notes,
+            metadata={
+                "tool_count": len(self.tool_names),
+                "max_steps": self.max_steps,
+            },
+        )
+        self._last_prompt = envelope
+        self._last_prompt_artifact_path = str(
+            save_prompt_artifact(envelope, prompt_dir=self.prompt_dir)
+        )
+        return envelope
+
+    @staticmethod
+    def _build_prompt_messages(envelope: PromptEnvelope) -> list[LLMMessage]:
+        messages = [LLMMessage(role="system", content=envelope.static_prefix)]
+        if envelope.dynamic_tail:
+            messages.append(LLMMessage(role="system", content=envelope.dynamic_tail))
+        return messages
+
+    @staticmethod
+    def _normalize_history(history: list[LLMMessage] | None) -> list[LLMMessage]:
+        return [msg for msg in (history or []) if msg.role != "system"]
 
     def run(self, user_input: str) -> AgentResult:
         state = AgentState()
-        state.add_message(LLMMessage(role="system", content=self.system_prompt))
+        envelope = self._build_prompt_envelope(user_input=user_input)
+        state.messages.extend(self._build_prompt_messages(envelope))
         state.add_message(LLMMessage(role="user", content=user_input))
 
         tool_schemas = self.registry.to_openai_schemas(self.tool_names)
@@ -120,6 +167,7 @@ class AgentLoop:
             answer=state.final_answer or "",
             steps=state.step,
             trace=[t.model_dump() for t in state.trace],
+            prompt_artifact_path=self._last_prompt_artifact_path,
         )
 
     async def arun(
@@ -136,10 +184,15 @@ class AgentLoop:
             callbacks: UI 层回调钩子；None 时等同纯运算
         """
         state = AgentState()
+        envelope = self._build_prompt_envelope(
+            user_input=user_input,
+            history=history,
+        )
         if history:
-            state.messages.extend(history)
+            state.messages.extend(self._build_prompt_messages(envelope))
+            state.messages.extend(self._normalize_history(history))
         else:
-            state.add_message(LLMMessage(role="system", content=self.system_prompt))
+            state.messages.extend(self._build_prompt_messages(envelope))
         state.add_message(LLMMessage(role="user", content=user_input))
 
         tool_schemas = self.registry.to_openai_schemas(self.tool_names)
@@ -220,6 +273,7 @@ class AgentLoop:
             answer=state.final_answer or "",
             steps=state.step,
             trace=[t.model_dump() for t in state.trace],
+            prompt_artifact_path=self._last_prompt_artifact_path,
         )
 
     @staticmethod
@@ -259,10 +313,15 @@ class AgentLoop:
         最终 chunk 的 finish_reason 永远非 None（'stop' / 'length' / 'error'）。
         """
         state = AgentState()
+        envelope = self._build_prompt_envelope(
+            user_input=user_input,
+            history=history,
+        )
         if history:
-            state.messages.extend(history)
+            state.messages.extend(self._build_prompt_messages(envelope))
+            state.messages.extend(self._normalize_history(history))
         else:
-            state.add_message(LLMMessage(role="system", content=self.system_prompt))
+            state.messages.extend(self._build_prompt_messages(envelope))
         state.add_message(LLMMessage(role="user", content=user_input))
 
         tool_schemas = self.registry.to_openai_schemas(self.tool_names)
@@ -397,6 +456,9 @@ class AgentLoop:
             f"\n\n[已达最大步数 {self.max_steps}，任务未完成]"
         )
         yield StreamChunk(delta_text=timeout_msg, finish_reason="length")
+
+    def get_last_prompt(self) -> PromptEnvelope | None:
+        return self._last_prompt
 
 
 def _merge_tc_delta(

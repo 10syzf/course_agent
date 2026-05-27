@@ -162,6 +162,9 @@ Task 014 没有为了接入 LangGraph 而推翻原有抽象，而是先补了一
 | **Task 012 · 让 Agent「分工合作」+「看得见账」** | ✅ | **多 Agent 编排（Planner / Solver / Critic / Orchestrator 四角分工，Plan→Solve→Critique→Refine 闭环，硬上限 30 LLM 调用）+ 可观测面板（SQLite metrics + `track_llm_call` + `course-agent metrics` 表格）+ Chainlit 数据层持久化（SQLAlchemy + aiosqlite，关闭浏览器历史不丢）+ Examiner 判分委托给 CriticAgent + doctor 第 11 项多 Agent 探活** |
 | **Task 013 · 让 Agent「会借外脑」** | ✅ | **统一 Capability Layer（`internal_tool / skill / mcp`）+ Local Skill Runtime（`study_plan_skill` / `quiz_from_notes_skill`）+ MCP Adapter（mock-first，可选开启）+ Capability Router + capability metrics + CLI `capabilities/skills list/mcp list` + doctor 第 12 项 Skill/MCP 探活 + Chainlit Step 显示 `Tool / Skill / MCP` 来源** |
 | **Task 014 · 让 Agent「运行在图上」** | ✅ | **LangGraph 图式运行时（双运行时架构 legacy/langgraph，可配置切换）+ LangChain Adapter Layer + `RuntimeConfig` + CLI `runtime/graph` 命令 + doctor 第 13 项 LangGraph 探活 + metrics 增加 `runtime_backend` 维度 + 默认 runtime 配置为 langgraph + Mermaid 图导出 + 新增 50 个测试用例** |
+| **Task 015 · 让 Agent「可回放、可比较、可演示」** | ✅ | **graph-native 单 Agent `ReactGraphRuntime` + replay / trace export + benchmark / compare CLI + Chainlit graph runtime 摘要 + 技术分享素材目录 + 新增 39 个测试用例** |
+| **Task 016 · 让 Agent「有状态、可恢复、可人工介入」** | ✅ | **`TaskSession` / `SessionStore` / `SessionRuntime` + `session` CLI（start/list/show/resume/continue/cancel）+ graph HITL 节点（`wait_human_input` / `wait_approval`）+ Chainlit 任务态展示 + 技术分享素材目录 + 新增 34 个测试用例** |
+| **Task 017 · 让 Agent「有 Prompt 架构」** | ✅ | **统一 `PromptEnvelope` / Prompt Compiler + `static_prefix` / `dynamic_tail` 分层 + `COURSE_AGENT.md` 项目级说明文件 + `prompt inspect/latest/profile` CLI + prompt artifact + prompt profiling + 新增 37 个测试用例** |
 | Milestone 3 · 多 Agent 编排 | ✅ | Planner / Solver / Critic / Orchestrator 四角分工 + Refine 闭环（Task 012）|
 
 ---
@@ -806,7 +809,7 @@ RUN_LIVE_WEB=1 uv run pytest tests/test_web_tools.py
 uv run ruff check .
 ```
 
-**当前测试状态**：**396 passed + 6 skipped**（live tests 默认跳过；Task 015 在 Task 014 基础上继续新增 39 个回归测试，覆盖 graph-native react runtime、replay export、benchmark compare、CLI replay/benchmark、trace schema 和 Chainlit graph 事件摘要）。
+**当前测试状态**：**467 passed + 6 skipped**（live tests 默认跳过；Task 017 在 Task 016 基础上继续新增 37 个回归测试，覆盖 prompt model/static prefix/dynamic tail/compiler、project instructions、prompt CLI、prompt profiling 与 AgentLoop/ReactGraphRuntime prompt integration）。
 
 ---
 
@@ -876,6 +879,139 @@ replay artifact 至少包含：
 - 可展示
 - 可分享
 - 可用于 benchmark / demo / 架构讲解
+
+---
+
+## ⏯️ Session / Resume（Task 016）
+
+Task 016 把“一次 graph 执行”升级成了“一个可持续推进的任务 session”。
+
+现在系统支持：
+
+- `TaskSession`
+- `SessionStore`
+- `SessionRuntime`
+- `session start / list / show / resume / continue / cancel`
+
+典型命令：
+
+```bash
+uv run course-agent session start "这个任务需要你确认后再继续"
+uv run course-agent session list
+uv run course-agent session show <session_id>
+uv run course-agent session resume <session_id>
+uv run course-agent session continue <session_id> --input "补充信息：继续"
+```
+
+这让项目首次具备：
+
+- session 级状态管理
+- waiting / resume 闭环
+- replay 与 session 的关联
+- 可持续任务而非一次性回答
+
+---
+
+## 🧑 Human-in-the-loop（Task 016）
+
+Task 016 还把人工介入节点正式引入 graph：
+
+- `wait_human_input`
+- `wait_approval`
+
+目前采用 mock-first 的最小实现：
+
+- 当 query 表达“稍后补充资料”时，graph 进入 `waiting_human_input`
+- 当 query 表达“需要你确认后再继续”时，graph 进入 `waiting_approval`
+
+然后可通过：
+
+- CLI 的 `session continue`
+- CLI 的 `session resume`
+- Chainlit 中的继续输入
+
+把任务送回运行时继续推进。
+
+这一步非常关键，因为它标志着系统从：
+
+- “会执行”
+
+变成了：
+
+- “会暂停、会等待人、会继续”
+
+---
+
+## 🧱 Prompt Architecture（Task 017）
+
+Task 017 把“发给模型的 prompt”从分散字符串升级成了统一基础设施：
+
+- `course_agent/prompt/models.py`：定义 `PromptSection` 与 `PromptEnvelope`
+- `course_agent/prompt/static_prefix.py`：集中维护全局静态前缀与角色级静态前缀
+- `course_agent/prompt/dynamic_tail.py`：统一拼装环境、项目说明、记忆、MCP、session、任务上下文
+- `course_agent/prompt/compiler.py`：作为唯一 prompt 编译入口，并支持 artifact 落盘与 markdown 导出
+- `course_agent/prompt/profiling.py`：输出 static / dynamic / full prompt 长度与占比
+
+这意味着系统现在不只是“有 runtime / replay / session”，还开始具备：
+
+- 可解释的 prompt 分层
+- 可复用的 prompt contract
+- 可 inspect 的 prompt artifact
+- 可 profiling 的 prompt 观察能力
+
+一句话说，Task 015 讲“怎么回放执行”，Task 016 讲“怎么恢复执行”，Task 017 讲“怎么解释模型到底看到了什么”。
+
+---
+
+## 🪄 Static Prefix / Dynamic Tail（Task 017）
+
+Task 017 参考 Claude Code 的思路，把 prompt 明确拆成两层：
+
+- **`static_prefix`**：稳定、共享、可缓存
+- **`dynamic_tail`**：按请求实时编译、面向当前任务
+
+### `static_prefix` 包含什么
+
+- 全局角色定义
+- 安全红线与操作约束
+- 工具使用原则
+- Git 安全
+- 输出风格
+- 各角色少量专属前缀（`react` / `planner` / `solver` / `critic` / `examiner`）
+
+### `dynamic_tail` 包含什么
+
+- 当前环境信息
+- `COURSE_AGENT.md` 项目级说明
+- memory notes
+- MCP / capability notes
+- session notes
+- 当前任务上下文
+
+当前实现采用**最小侵入接法**：
+
+- 保留现有 `user` / `assistant` / `tool` 消息协议
+- 编译出统一 `PromptEnvelope`
+- 最终把 `static_prefix` 与 `dynamic_tail` 作为两段标准 `system` message 注入 `AgentLoop` 与 `ReactGraphRuntime`
+
+这样既不打破现有 ReAct / graph / session 流程，又把 prompt 边界显式化，方便后续做 replay、benchmark 与 cache-friendly 优化。
+
+### Prompt CLI
+
+```bash
+uv run course-agent prompt inspect
+uv run course-agent prompt inspect --role solver --query "帮我总结这个改动"
+uv run course-agent prompt latest
+uv run course-agent prompt profile
+```
+
+这些命令可以直接查看：
+
+- 当前完整 prompt
+- `static_prefix` / `dynamic_tail`
+- section 列表
+- `static_hash` / `dynamic_hash`
+- static / dynamic 长度占比
 
 ---
 
@@ -1187,7 +1323,7 @@ course_agent/
 │   ├── solver.py         # ✅ Task 012：SolverAgent（执行单个 sub_task，全工具集）
 │   ├── critic.py         # ✅ Task 012：CriticAgent（独立评审，工具白名单仅 kb_search，输出 {score, pass, feedback}）
 │   └── orchestrator.py   # ✅ Task 012：Orchestrator（Plan→Solve→Critique→Refine 闭环；硬上限 30 LLM 调用）
-├── runtime/              # ✅ Task 014 + 015：统一运行时入口（multi-agent + chat runtime）
+├── runtime/              # ✅ Task 014 + 015 + 016：统一运行时入口（multi-agent + chat + stateful session）
 │   ├── __init__.py       # create_runtime / create_chat_runtime 统一导出
 │   ├── backend.py        # orchestrator runtime + chat runtime 选择器
 │   ├── legacy_runtime.py # 兼容旧 Orchestrator 的薄封装
@@ -1195,21 +1331,39 @@ course_agent/
 │   │                     # LangGraph Runtime（checkpoint / graph invoke / mermaid）
 │   ├── react_graph_runtime.py
 │   │                     # Task 015：graph-native 单 Agent ReAct Runtime
+│   ├── session_runtime.py
+│   │                     # Task 016：stateful session runtime
+│   ├── resume.py         # Task 016：resume / continue 辅助判断
 │   ├── replay.py         # Task 015：replay artifact 读写与导出
 │   ├── benchmark.py      # Task 015：legacy / langgraph runtime 对比
 │   ├── langchain_adapters.py
 │   │                     # BaseLLM / Tool / Capability 到 LangChain 的桥接层
 │   └── state.py          # GraphRuntimeState / state_to_result / trace helper
-├── graph/                # ✅ Task 014 + 015：LangGraph 节点、边与图构建
+├── graph/                # ✅ Task 014 + 015 + 016：LangGraph 节点、边与图构建
 │   ├── __init__.py
 │   ├── orchestrator_graph.py
 │   │                     # Planner→Solver→Critic→Refine 图构建
 │   ├── react_graph.py    # Task 015：单 Agent ReAct graph
 │   ├── react_nodes.py    # Task 015：react graph 节点
 │   ├── trace.py          # Task 015：trace / replay schema helper
+│   ├── human_nodes.py    # Task 016：HITL 节点
+│   ├── session_edges.py  # Task 016：session / HITL 条件边
 │   ├── nodes.py          # 节点实现
 │   ├── edges.py          # 条件边判定
 │   └── prompts.py        # Mermaid fallback / 图常量
+├── session/              # ✅ Task 016：状态化任务会话
+│   ├── __init__.py
+│   ├── models.py         # TaskSession / SessionStatus
+│   ├── store.py          # SessionStore（JSON 持久化）
+│   └── manager.py        # session 生命周期管理
+├── prompt/               # ✅ Task 017：Prompt 基础设施
+│   ├── models.py         # PromptSection / PromptEnvelope
+│   ├── static_prefix.py  # 全局静态前缀 + 角色静态前缀
+│   ├── dynamic_tail.py   # 环境 / 项目说明 / session / task 动态尾部
+│   ├── compiler.py       # Prompt Compiler + artifact 落盘
+│   ├── project_instructions.py
+│   │                     # 读取 COURSE_AGENT.md / CLAUDE.md
+│   └── profiling.py      # static / dynamic prompt profiling
 ├── capabilities/         # ✅ Task 013：统一能力层（internal_tool / skill / mcp）
 │   ├── base.py           # CapabilityKind / CapabilitySpec / CapabilityCallResult / BaseCapabilityProvider
 │   ├── registry.py       # CapabilityRegistry
@@ -1232,10 +1386,13 @@ course_agent/
 ├── logger.py             # loguru 包装
 └── cli.py                # typer + rich 的 CLI 入口（chat / tools / version / ui / doctor / metrics / capabilities / skills / mcp）
 
+COURSE_AGENT.md           # ✅ Task 017：项目级 prompt contract（动态尾部自动接入）
 docs/
-└── tech_share_task015/   # Task 015：技术分享素材（架构演进 / demo / benchmark / replay）
+├── tech_share_task015/   # Task 015：技术分享素材（架构演进 / demo / benchmark / replay）
+├── tech_share_task016/   # Task 016：Stateful Agent / HITL / Resume 分享素材
+└── tech_share_task017/   # Task 017：Prompt Architecture / inspect / profiling 分享素材
 
-tests/                    # 396 passed + 6 skipped：覆盖 Task 015 的 react graph / replay / benchmark / Chainlit graph 摘要
+tests/                    # 467 passed + 6 skipped：覆盖 Task 017 的 prompt compiler / inspect / profiling / integration
 config/default.yaml       # 默认 YAML 配置
 .chainlit/config.toml     # Chainlit 主题/UI 配置
 chainlit.md               # Chainlit 欢迎页
@@ -1328,6 +1485,10 @@ course-agent ui
 - [`task/task_011.md`](task/task_011.md) — 让 Agent「答得顺」+「考得出」（流式 + Examiner Agent + generate_question）✅
 - [`task/task_012.md`](task/task_012.md) — 让 Agent「分工合作」+「看得见账」（多 Agent + metrics + data layer）✅
 - [`task/task_013.md`](task/task_013.md) — 让 Agent「会借外脑」（Capability Layer + Skill Runtime + MCP Adapter）✅
+- [`task/task_014.md`](task/task_014.md) — 让 Agent「运行在图上」（LangGraph runtime + adapter layer）✅
+- [`task/task_015.md`](task/task_015.md) — 让 Agent「可回放、可比较、可演示」（replay + benchmark + demo）✅
+- [`task/task_016.md`](task/task_016.md) — 让 Agent「有状态、可恢复、可人工介入」（session + HITL + resume）✅
+- [`task/task_017.md`](task/task_017.md) — 让 Agent「有 Prompt 架构」（PromptEnvelope + compiler + inspect/profile）✅
 
 ---
 

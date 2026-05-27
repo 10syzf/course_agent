@@ -32,6 +32,9 @@ class RuntimeConfig(BaseModel):
     checkpoint: str = "memory"
     draw_graph: bool = True
     trace_dir: str = "data/replays"
+    prompt_dir: str = "data/prompts"
+    session_dir: str = "data/sessions"
+    hitl_enabled: bool = True
 
 
 class LoggingConfig(BaseModel):
@@ -122,6 +125,17 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
         }
     if os.getenv("RUNTIME_TRACE_DIR"):
         runtime_data["trace_dir"] = os.getenv("RUNTIME_TRACE_DIR")
+    if os.getenv("RUNTIME_PROMPT_DIR"):
+        runtime_data["prompt_dir"] = os.getenv("RUNTIME_PROMPT_DIR")
+    if os.getenv("RUNTIME_SESSION_DIR"):
+        runtime_data["session_dir"] = os.getenv("RUNTIME_SESSION_DIR")
+    if os.getenv("RUNTIME_HITL_ENABLED"):
+        runtime_data["hitl_enabled"] = os.getenv("RUNTIME_HITL_ENABLED", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     mcp_data = data.get("mcp", {})
     if os.getenv("MCP_ENABLED"):

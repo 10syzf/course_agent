@@ -117,6 +117,7 @@ class PlannerAgent:
             tool_names=tool_names,
             max_steps=max_steps,
             system_prompt=PLANNER_SYSTEM_PROMPT,
+            prompt_role="planner",
         )
 
     @property

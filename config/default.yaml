@@ -18,6 +18,9 @@ runtime:
   checkpoint: memory              # none | memory | sqlite
   draw_graph: true
   trace_dir: data/replays
+  prompt_dir: data/prompts
+  session_dir: data/sessions
+  hitl_enabled: true
 
 mcp:
   enabled: false

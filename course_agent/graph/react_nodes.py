@@ -159,6 +159,7 @@ async def finalize_node(state: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "done": True,
+        "status": "completed",
         "final_answer": final_answer,
         "trace": append_graph_trace(
             state.get("trace", []),

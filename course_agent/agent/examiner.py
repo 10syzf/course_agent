@@ -90,6 +90,7 @@ class ExaminerAgent:
             tool_names=tool_names,
             max_steps=max_steps,
             system_prompt=system_prompt or EXAMINER_SYSTEM_PROMPT,
+            prompt_role="examiner",
         )
         # Task 012：判分阶段可委托给独立 CriticAgent
         self._critic = critic

@@ -22,7 +22,7 @@ from course_agent.memory import (
     create_embedder,
 )
 from course_agent.memory.tools import set_active_manager
-from course_agent.runtime import create_chat_runtime, create_runtime
+from course_agent.runtime import create_chat_runtime, create_runtime, create_session_runtime
 from course_agent.tools import get_registry
 from course_agent.ui.adapters import ChainlitCallbacks
 
@@ -248,6 +248,22 @@ def _build_agent(cfg, system_prompt: str | None = None) -> AgentLoop:
     )
 
 
+def _build_session_runtime(cfg, agent):
+    """仅在 react graph runtime 下创建 session runtime."""
+    if getattr(agent, "runtime_kind", "") != "react_graph":
+        return None
+    try:
+        return create_session_runtime(
+            cfg,
+            llm=agent.llm,
+            max_steps=cfg.agent.max_steps,
+            system_prompt=getattr(agent, "system_prompt", None),
+        )
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"构建 SessionRuntime 失败，回退到普通 react graph：{e}")
+        return None
+
+
 @cl.on_chat_start
 async def on_chat_start() -> None:
     """每个浏览器会话启动时初始化."""
@@ -275,6 +291,8 @@ async def on_chat_start() -> None:
 
     cl.user_session.set("cfg", cfg)
     cl.user_session.set("agent", agent)
+    cl.user_session.set("session_runtime", _build_session_runtime(cfg, agent))
+    cl.user_session.set("task_session_id", None)
     cl.user_session.set("agent_mode", "react")
     cl.user_session.set("history", history)
     cl.user_session.set("scene", "default")
@@ -340,6 +358,8 @@ async def on_scene_action(action: cl.Action) -> None:
             return
 
         cl.user_session.set("agent", examiner)
+        cl.user_session.set("session_runtime", None)
+        cl.user_session.set("task_session_id", None)
         cl.user_session.set("agent_mode", "examiner")
         # Examiner 有自己的 system prompt，重置 history 用 examiner 的 prompt
         from course_agent.agent.examiner import EXAMINER_SYSTEM_PROMPT
@@ -388,6 +408,8 @@ async def on_scene_action(action: cl.Action) -> None:
 
         cl.user_session.set("agent", orchestrator)
         cl.user_session.set("orchestrator_llm", llm)
+        cl.user_session.set("session_runtime", None)
+        cl.user_session.set("task_session_id", None)
         cl.user_session.set("agent_mode", "orchestrator")
         cl.user_session.set("history", [])
         cl.user_session.set("scene", "orchestrator")
@@ -429,6 +451,8 @@ async def on_scene_action(action: cl.Action) -> None:
         return
 
     cl.user_session.set("agent", agent)
+    cl.user_session.set("session_runtime", _build_session_runtime(cfg, agent))
+    cl.user_session.set("task_session_id", None)
     cl.user_session.set("agent_mode", "react")
     cl.user_session.set("history", _reset_history(prompt))
     cl.user_session.set("scene", scene)
@@ -507,6 +531,7 @@ async def on_settings_update(settings: dict) -> None:
 
     cl.user_session.set("cfg", cfg)
     cl.user_session.set("agent", agent)
+    cl.user_session.set("session_runtime", _build_session_runtime(cfg, agent))
     cl.user_session.set("memory", memory)
     cl.user_session.set("memory_enabled", memory.long is not None)
 
@@ -672,6 +697,98 @@ async def on_message(message: cl.Message) -> None:
         history_raw.append(
             LLMMessage(role="assistant", content=final_text).model_dump()
         )
+        if len(history_raw) > 21:
+            history_raw = [history_raw[0]] + history_raw[-20:]
+        cl.user_session.set("history", history_raw)
+        return
+
+    # Task 016：stateful react graph session
+    session_runtime = cl.user_session.get("session_runtime")
+    if (
+        getattr(agent, "runtime_kind", "") == "react_graph"
+        and session_runtime is not None
+    ):
+        session_id = cl.user_session.get("task_session_id")
+        current_session = (
+            session_runtime.get_session(session_id) if session_id else None
+        )
+        current_status = (
+            getattr(getattr(current_session, "status", None), "value", None)
+            if current_session is not None
+            else None
+        )
+        try:
+            if current_session is not None and current_status == "waiting_human_input":
+                session_result = await session_runtime.continue_session(
+                    current_session.session_id,
+                    user_text,
+                    callbacks=callbacks,
+                )
+            elif current_session is not None and current_status == "waiting_approval":
+                if any(token in user_text for token in ["确认", "继续", "批准", "yes", "ok"]):
+                    session_result = await session_runtime.resume(
+                        current_session.session_id,
+                        callbacks=callbacks,
+                    )
+                else:
+                    session_result = await session_runtime.continue_session(
+                        current_session.session_id,
+                        user_text,
+                        callbacks=callbacks,
+                    )
+            else:
+                session_result = await session_runtime.start(
+                    user_text,
+                    history=enriched,
+                    callbacks=callbacks,
+                )
+        except Exception as e:  # noqa: BLE001
+            _log.warning(f"SessionRuntime 运行失败：{type(e).__name__}: {e}")
+            await cl.Message(
+                content=f"❌ Stateful session 失败：{type(e).__name__}: {e}",
+                author="System",
+            ).send()
+            return
+
+        cl.user_session.set("task_session_id", session_result.session.session_id)
+        final_text = session_result.runtime_result.answer or ""
+        await cl.Message(content=final_text, author="Course Agent").send()
+        try:
+            async with cl.Step(name="Task Session", type="tool") as task_step:
+                task_step.input = user_text
+                task_step.output = (
+                    f"session_id=`{session_result.session.session_id}`\n"
+                    f"status=`{session_result.session.status}`\n"
+                    f"waiting_reason=`{session_result.session.waiting_reason or '-'}`\n"
+                    f"replay=`{session_result.session.latest_replay_path or '-'}`"
+                )
+        except Exception as e:  # noqa: BLE001
+            _log.warning(f"Task Session Step 渲染异常：{e}")
+
+        replay = getattr(agent, "get_last_replay", lambda: None)() or {}
+        nodes = replay.get("node_sequence", [])
+        if nodes:
+            try:
+                async with cl.Step(name="Graph Runtime", type="tool") as graph_step:
+                    graph_step.input = user_text
+                    graph_step.output = (
+                        f"backend=`{replay.get('backend', 'langgraph')}`\n"
+                        f"runtime=`{replay.get('runtime_kind', 'react_graph')}`\n"
+                        f"nodes=`{' -> '.join(nodes)}`\n"
+                        f"total steps=`{replay.get('steps', 0)}`\n"
+                        f"replay=`{replay.get('path', '')}`"
+                    )
+            except Exception as e:  # noqa: BLE001
+                _log.warning(f"Graph Runtime Step 渲染异常：{e}")
+
+        if memory is not None:
+            try:
+                await memory.add_user(user_text)
+                await memory.add_assistant(final_text)
+            except Exception as e:  # noqa: BLE001
+                _log.warning(f"写入记忆失败：{e}")
+        history_raw.append(LLMMessage(role="user", content=user_text).model_dump())
+        history_raw.append(LLMMessage(role="assistant", content=final_text).model_dump())
         if len(history_raw) > 21:
             history_raw = [history_raw[0]] + history_raw[-20:]
         cl.user_session.set("history", history_raw)
